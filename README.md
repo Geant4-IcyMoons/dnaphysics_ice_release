@@ -6,7 +6,7 @@
 
 ## Overview
 
-Geant4-IcyMoons is an extension of Geant4-DNA for Monte Carlo simulation of electron transport in water ice and related condensed phases. The present release extends the Geant4-DNA electron-transport framework with new water-ice interaction physics, most notably phase-specific inelastic electronic excitation and ionization cross sections for amorphous and hexagonal ice, together with the supporting models, data products, examples, and utilities required to use them in practice. At the level of the distributed transport physics, the release models the elastic and inelastic interactions of electrons in amorphous and hexagonal water ice, with the principal phase-resolved extension entering through the electronic inelastic sector.
+Geant4-IcyMoons is an extension of Geant4-DNA for Monte Carlo simulation of electron transport in water ice and related condensed phases. The present release extends the Geant4-DNA electron-transport framework with new water-ice interaction physics, most notably phase-specific inelastic electronic excitation and ionization cross sections for amorphous and hexagonal ice, along with the supporting models, data products, examples, and utilities required for their use in practice. At the level of the distributed transport physics, the release models the elastic and inelastic interactions of electrons in amorphous and hexagonal water ice, with the principal phase-resolved extension entering through the electronic inelastic sector.
 
 The distribution provides:
 
@@ -263,38 +263,6 @@ A process-level verification run may then be performed with:
 ./examples/example_2/run_example_2.sh --binary "./build/dnaphysics"
 python3 examples/example_2/plot_example_2_process_diagnostics.py
 ```
-
-## Python Utilities
-
-### Plotting And Diagnostics
-
-Under `python_scripts/plotting/`, the release provides:
-
-- `plot_depth_diagnostics.py`
-  depth-profile and deposited-energy diagnostics
-- `plot_diagnostics_all_processes.py`
-  process-resolved diagnostics from ROOT outputs
-- `plot_elastic_cross_sections.py`
-  inspection plots for bundled elastic, vibrational, and attachment datasets
-- `plot_stopping_power_xs.py`
-  stopping-power and W-value style plots from tabulated cross sections
-
-These plotting scripts may obtain reference files from either the repository-local `cross_sections/` directory or `G4LEDATA/dna`, depending on the script and invocation mode.
-
-### Cross-Section Generation And Inspection
-
-Under `python_scripts/physics_ice/`, the release provides:
-
-- `generate_vibExc_cumulative_dat.py`
-  regenerates the vibrational differential and cumulative sampling tables from Michaud tabular inputs
-- `generate_ice_cross_sections.py`
-  generates phase-specific inelastic excitation and ionization products for water ice
-- `generate_blended_elastic_dat.py`
-  prepares blended elastic datasets
-- `plot_ice_cross_sections.py`
-  visualizes generated ice cross sections
-
-The tabular input files used by these scripts are located in `tabular/`.
 
 ## Distributed Cross-Section Families
 
