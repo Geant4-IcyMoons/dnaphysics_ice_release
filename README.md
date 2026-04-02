@@ -6,16 +6,18 @@
 
 ## Overview
 
-Geant4-IcyMoons is a Geant4-DNA based release for Monte Carlo simulation of electron transport in icy condensed media. The present distribution provides:
+Geant4-IcyMoons is an extension of Geant4-DNA for Monte Carlo simulation of electron transport in water ice and related condensed phases. The present release extends the Geant4-DNA electron-transport framework with new water-ice interaction physics, most notably phase-specific inelastic electronic excitation and ionization cross sections for amorphous and hexagonal ice, together with the supporting models, data products, examples, and utilities required to use them in practice. At the level of the distributed transport physics, the release models the elastic and inelastic interactions of electrons in amorphous and hexagonal water ice, with the principal phase-resolved extension entering through the electronic inelastic sector.
+
+The distribution provides:
 
 - a standalone Geant4 application, `dnaphysics`
-- custom low-energy electron cross-section datasets for ice
-- Geant4 model implementations and physics-list integration for those datasets
+- new water-ice inelastic cross-section datasets for amorphous and hexagonal ice
+- Geant4 model implementations and physics-list integration for those new datasets and the supporting transport channels used by the release
 - validated example macros and run scripts
 - Python utilities for diagnostics, plotting, and cross-section generation
 - a Europa energy-library generation workflow
 
-This release is intended for users who require a documented, reproducible starting point for:
+This release is intended for users who require a documented, reproducible framework for:
 
 - transport simulations in amorphous ice, hexagonal ice, and liquid water
 - comparison of standard and custom low-energy interaction channels
@@ -25,12 +27,14 @@ This release is intended for users who require a documented, reproducible starti
 
 ## Scope Of The Release
 
-The release extends standard Geant4-DNA electron transport with ice-specific data products and models. In particular, it distributes:
+The release extends standard Geant4-DNA electron transport to water-ice media through new models and distributed cross-section tables. In particular, it distributes:
 
-- Michaud-based vibrational-excitation data
+- phase-specific electronic excitation tables for amorphous and hexagonal water ice
+- phase-specific ionization tables for amorphous and hexagonal water ice
+- differential `sigmadiff_*` products used where angular or energy-loss sampling requires more than total cross sections alone
+- Michaud-based vibrational-excitation data for low-energy condensed-ice transport
 - Michaud-based low-energy attachment data
-- multiple elastic datasets and angular-sampling tables
-- phase-specific excitation and ionisation tables for amorphous and hexagonal ice derived from the Emfietzoglou-Kyriakou model chain
+- multiple elastic datasets and angular-sampling tables spanning the low- and high-energy transport treatment used by the release
 
 The executable supports three runtime physics modes:
 
@@ -39,6 +43,8 @@ The executable supports three runtime physics modes:
 - `water`: liquid water
 
 If no mode is specified, the application defaults to `ice_hex`.
+
+In the present release, the phase dependence between amorphous and hexagonal ice enters primarily through the electronic inelastic sector, namely excitation and ionization. The supporting elastic, vibrational-excitation, and attachment channels remain distributed as the transport inputs used by the current implementation, but are not yet fully phase-dependent in the same way as the electronic inelastic channels.
 
 ## Repository Contents
 
@@ -222,7 +228,7 @@ This example is recommended when process-by-process inspection is required.
 - cosine angular distribution
 - geometry-limited `maxtheta`
 
-This example is intended as a compact analogue of the Europa-style source configuration.
+This example is intended as a compact analog of the Europa-style source configuration.
 
 ### Examples 4, 5, and 6
 
@@ -273,7 +279,7 @@ Under `python_scripts/plotting/`, the release provides:
 - `plot_stopping_power_xs.py`
   stopping-power and W-value style plots from tabulated cross sections
 
-These plotting scripts may resolve reference files either from the repository-local `cross_sections/` directory or from `G4LEDATA/dna`, depending on the script and invocation mode.
+These plotting scripts may obtain reference files from either the repository-local `cross_sections/` directory or `G4LEDATA/dna`, depending on the script and invocation mode.
 
 ### Cross-Section Generation And Inspection
 
@@ -282,17 +288,17 @@ Under `python_scripts/physics_ice/`, the release provides:
 - `generate_vibExc_cumulative_dat.py`
   regenerates the vibrational differential and cumulative sampling tables from Michaud tabular inputs
 - `generate_ice_cross_sections.py`
-  generates phase-specific excitation and ionisation products for ice
+  generates phase-specific inelastic excitation and ionization products for water ice
 - `generate_blended_elastic_dat.py`
   prepares blended elastic datasets
 - `plot_ice_cross_sections.py`
   visualizes generated ice cross sections
 
-The tabular inputs used by these scripts are distributed under `tabular/`.
+The tabular input files used by these scripts are located in `tabular/`.
 
 ## Distributed Cross-Section Families
 
-The release already includes the principal `.dat` tables required by the present custom models.
+The release already includes the principal `.dat` tables required by the present custom models. The central physics extension introduced here is the electronic inelastic treatment of water ice, distributed separately for amorphous and hexagonal phases. The remaining bundled families provide the supporting transport description used by the current release.
 
 Representative files include:
 
@@ -312,12 +318,12 @@ Representative files include:
 - `sigmadiff_cumulated_elastic_e_elsepa_muffin.dat`
 - multiple low-energy, high-energy, and corrected Michaud-ELSEPA variants
 
-### Amorphous-Ice Excitation And Ionisation
+### Amorphous-Ice Excitation And Ionization
 
 - `sigma_excitation_e_amorphous_ice_emfietzoglou_kyriakou.dat`
 - `sigma_ionisation_e_amorphous_ice_emfietzoglou_kyriakou.dat`
 
-### Hexagonal-Ice Excitation And Ionisation
+### Hexagonal-Ice Excitation And Ionization
 
 - `sigma_excitation_e_hexagonal_ice_emfietzoglou_kyriakou.dat`
 - `sigma_ionisation_e_hexagonal_ice_emfietzoglou_kyriakou.dat`
@@ -336,63 +342,4 @@ This workflow:
 
 - constructs a shared global energy grid
 - generates one Geant4 macro per global energy
-- writes offline weighting tables that map local Europa surface cells onto that shared energy library
-
-Detailed guidance for this workflow is provided in:
-
-- `python_scripts/europa/README.md`
-
-## Troubleshooting
-
-### Missing Custom Data Files
-
-If the executable cannot locate a custom cross-section file, verify:
-
-- `G4LEDATA` is defined
-- the required file exists under `"$G4LEDATA/dna/"`
-
-The distributed C++ models resolve data via `G4FindDataDir("G4LEDATA")`.
-
-### Incorrect Physics Mode
-
-If the run uses an unexpected physics branch, verify the value of:
-
-- `DNA_PHYSICS`
-
-The supported values are:
-
-- `ice_am`
-- `ice_hex`
-- `water`
-
-### Overwritten ROOT Outputs
-
-If ROOT files are being replaced unintentionally, set:
-
-- `DNA_ROOT_BASENAME` to a unique name for each run
-- or `DNA_KEEP_OLD_ROOT=1` to preserve matching existing outputs
-
-### Unexpected Multi-Threaded ROOT Output Behavior
-
-If multi-threaded output produces more files than expected, or rotates unexpectedly, inspect:
-
-- `DNA_NTUPLE_FILES`
-- `DNA_NTUPLE_MERGE`
-- `DNA_ROOT_SPLIT_EVENTS`
-- `DNA_ROOT_MAX_MB`
-
-These settings control ntuple merging and file rotation.
-
-## References
-
-This release builds on:
-
-- the Geant4-DNA collaboration software and documentation
-- Michaud et al. low-energy electron interaction data for water ice
-- Emfietzoglou and Kyriakou based excitation and ionisation modelling for ice
-
-Users should cite the relevant Geant4-DNA collaboration publications and the underlying physics-data references appropriate to their use case.
-
-## License
-
-This release extends and depends on Geant4. Use and redistribution remain subject to the Geant4 Software License and to any licensing conditions associated with the distributed source data and derived tables.
+- writes offline weighting tables that map loc
