@@ -49,7 +49,7 @@ class Osc:
     gamma: float    # damping width (eV)
     f: float        # oscillator strength (dimensionless)
     kind: Literal["ionization", "excitation", "k_shell"]
-    Bth: float = 0.0  # threshold (eV), used for ionization channels
+    Bth: float = 0.0  # threshold (eV), used for ionization and K-shell channels
 
 
 @dataclass(frozen=True)
@@ -872,25 +872,42 @@ def plot_neff_and_I(E_min=0.1, E_max=1.0e6, npts=50000, savepath=None, partition
 def plot_model_vs_experiment_two_panel(use_partitioning: bool = True, savepath: str | Path | None = "output/Model_vs_Experiment_both.pdf") -> Path:
     """
     Create a two-panel horizontal comparison (amorphous, hexagonal) of model vs
-    experimental dielectric properties (Im eps, Re eps, ELF) at q=0. Legend is
-    centered below both panels. Formatting matches the single-panel plots; grid
-    is omitted.
+    experimental dielectric properties (Im eps, Re eps, ELF) at q=0, with a
+    matching residual panel beneath each main panel. Legend is centered below
+    both columns. Formatting matches the single-panel plots; grid is omitted.
     """
     from matplotlib.gridspec import GridSpec
 
     ice_data_file = ICE_DATA_XLSX_PATH
     E = np.linspace(1.0, 60.0, 20000)
+    vib_colors = plt.get_cmap("plasma", 4)(np.arange(3))
 
-    fig = plt.figure(figsize=(14, 7))
-    gs = GridSpec(2, 2, height_ratios=[3.0, 0.8], width_ratios=[1.0, 1.0], hspace=0.30, wspace=0.25)
+    fig = plt.figure(figsize=(14, 9))
+    gs = GridSpec(
+        3,
+        2,
+        height_ratios=[3.0, 1.2, 0.8],
+        width_ratios=[1.0, 1.0],
+        hspace=0.22,
+        wspace=0.25,
+    )
     axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])]
-    legend_ax = fig.add_subplot(gs[1, :])
+    residual_axes = [
+        fig.add_subplot(gs[1, 0], sharex=axes[0]),
+        fig.add_subplot(gs[1, 1], sharex=axes[1]),
+    ]
+    legend_ax = fig.add_subplot(gs[2, :])
     legend_ax.axis("off")
 
     handles_all = []
     labels_all = []
 
-    for ax, ice in zip(axes, ["amorphous", "hexagonal"]):
+    for ax, rax, ice, panel_label in zip(
+        axes,
+        residual_axes,
+        ["amorphous", "hexagonal"],
+        ["(a)", "(b)"],
+    ):
         s = epsilon_optical(ice)
 
         sheet_name = "Hexagonal" if ice == "hexagonal" else "Amorphous"
@@ -917,25 +934,108 @@ def plot_model_vs_experiment_two_panel(use_partitioning: bool = True, savepath: 
         ln3 = ax.plot(E, elf_model, "k-.", linewidth=2, label="Model: ELF", zorder=5)[0]
 
         # Experimental
-        ln4 = ax.plot(exp_e2_E, exp_e2, "d-", color="darkgray", linewidth=1.5, markersize=5,
-                      markerfacecolor="darkgray", markeredgecolor="darkgray",
+        ln4 = ax.plot(exp_e2_E, exp_e2, "d-", color=vib_colors[0], linewidth=1.5, markersize=5,
+                      markerfacecolor=vib_colors[0], markeredgecolor=vib_colors[0],
                       label=r"Exp: Im($\epsilon$)", zorder=10)[0]
-        ln5 = ax.plot(exp_e1_E, exp_e1, "s-", color="darkgray", linewidth=1.5, markersize=5,
-                      markerfacecolor="darkgray", markeredgecolor="darkgray",
+        ln5 = ax.plot(exp_e1_E, exp_e1, "s-", color=vib_colors[1], linewidth=1.5, markersize=5,
+                      markerfacecolor=vib_colors[1], markeredgecolor=vib_colors[1],
                       label=r"Exp: Re($\epsilon$)", zorder=10)[0]
-        ln6 = ax.plot(exp_elf_E, exp_elf, "^-", color="darkgray", linewidth=1.5, markersize=5,
-                      markerfacecolor="darkgray", markeredgecolor="darkgray",
+        ln6 = ax.plot(exp_elf_E, exp_elf, "^-", color=vib_colors[2], linewidth=1.5, markersize=5,
+                      markerfacecolor=vib_colors[2], markeredgecolor=vib_colors[2],
                       label="Exp: ELF", zorder=10)[0]
+
+        # Residuals: model - experiment at experimental sampling points.
+        e2_resid = np.interp(exp_e2_E, E, e2_model) - exp_e2
+        e1_resid = np.interp(exp_e1_E, E, e1_model) - exp_e1
+        elf_resid = np.interp(exp_elf_E, E, elf_model) - exp_elf
+
+        rax.plot(
+            exp_e2_E,
+            e2_resid,
+            "d-",
+            color=vib_colors[0],
+            linewidth=1.2,
+            markersize=4,
+            markerfacecolor=vib_colors[0],
+            markeredgecolor=vib_colors[0],
+            zorder=5,
+        )
+        rax.plot(
+            exp_e1_E,
+            e1_resid,
+            "s-",
+            color=vib_colors[1],
+            linewidth=1.2,
+            markersize=4,
+            markerfacecolor=vib_colors[1],
+            markeredgecolor=vib_colors[1],
+            zorder=5,
+        )
+        rax.plot(
+            exp_elf_E,
+            elf_resid,
+            "^-",
+            color=vib_colors[2],
+            linewidth=1.2,
+            markersize=4,
+            markerfacecolor=vib_colors[2],
+            markeredgecolor=vib_colors[2],
+            zorder=5,
+        )
+        rax.axhline(0.0, color="black", linewidth=1.0, zorder=1)
 
         ax.set_xlim(0, 30)
         ax.set_ylim(0, 2.9)
-        ax.set_xlabel("Energy transfer ($E$; eV)")
+        ax.set_xlabel("")
         if ice == "amorphous":
             ax.set_ylabel("Dielectric properties")
         else:
             ax.set_ylabel("")
-        ax.set_title(f"{ice.capitalize()} ice")
+        ax.tick_params(
+            axis="both",
+            which="major",
+            direction="in",
+            length=6,
+            width=1.0,
+            bottom=True,
+            top=False,
+            left=True,
+            right=False,
+        )
+        ax.minorticks_off()
         # No grid as requested
+        ax.tick_params(labelbottom=False)
+        ax.text(
+            0.0,
+            1.04,
+            panel_label,
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=float(FONTSIZE),
+            clip_on=False,
+        )
+
+        rax.set_xlim(0, 30)
+        rax.set_ylim(-0.5, 0.5)
+        rax.set_yticks([-0.3, 0.0, 0.3])
+        rax.set_xlabel("Energy transfer ($E$; eV)")
+        if ice == "amorphous":
+            rax.set_ylabel("Residuals")
+        else:
+            rax.set_ylabel("")
+        rax.tick_params(
+            axis="both",
+            which="major",
+            direction="in",
+            length=6,
+            width=1.0,
+            bottom=True,
+            top=False,
+            left=True,
+            right=False,
+        )
+        rax.minorticks_off()
 
         handles_all.extend([ln1, ln2, ln3, ln4, ln5, ln6])
         labels_all.extend([
@@ -950,11 +1050,21 @@ def plot_model_vs_experiment_two_panel(use_partitioning: bool = True, savepath: 
         if lbl not in seen:
             unique.append((h, lbl))
             seen.add(lbl)
-    handles_u, labels_u = zip(*unique)
+    handle_by_label = {lbl: h for h, lbl in unique}
+    labels_u = (
+        r"Model: Im($\epsilon$)",
+        r"Exp: Im($\epsilon$)",
+        r"Model: Re($\epsilon$)",
+        r"Exp: Re($\epsilon$)",
+        "Model: ELF",
+        "Exp: ELF",
+    )
+    handles_u = tuple(handle_by_label[lbl] for lbl in labels_u)
     legend_ax.legend(
         handles_u,
         labels_u,
-        loc="center",
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.8),
         ncol=3,
         frameon=False,
         columnspacing=1.5,

@@ -8,7 +8,7 @@ Plot elastic scattering cross-sections for electrons in ice:
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from matplotlib.ticker import LogFormatterMathtext, NullLocator
+from matplotlib.ticker import LogFormatterMathtext, LogLocator, MultipleLocator
 
 from constants import (
     ELASTIC_BLEND_E0,
@@ -191,13 +191,39 @@ def plot_elastic_cross_sections():
     ax.set_xlabel('Electron energy ($T$; eV)')
     ax.set_ylabel(r'Cross-section (cm$^2$)')
     # ax.set_title('Electron Elastic Scattering Cross-Sections in Ice')
-    ax.legend(loc='best')
+    ax.legend(loc='best', frameon=False)
     # ax.grid(True, which='both', alpha=0.3, linestyle=':')
     ax.set_xlim(1, ELASTIC_PLOT_E_MAX)
     x_ticks = [10.0**k for k in range(0, 8)]  # 1e0 ... 1e7
     ax.set_xticks(x_ticks)
+    ax.xaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0,), numticks=50))
+    ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0,), numticks=50))
     ax.xaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
-    ax.xaxis.set_minor_locator(NullLocator())
+    ax.yaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
+    ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1, numticks=200))
+    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1, numticks=200))
+    ax.tick_params(
+        axis="both",
+        which="major",
+        length=8,
+        width=1.2,
+        direction="in",
+        bottom=True,
+        top=False,
+        left=True,
+        right=False,
+    )
+    ax.tick_params(
+        axis="both",
+        which="minor",
+        length=4,
+        width=1.0,
+        direction="in",
+        bottom=True,
+        top=False,
+        left=True,
+        right=False,
+    )
     
     plt.tight_layout()
     
@@ -248,12 +274,30 @@ def plot_vibrational_excitations():
             E_valid = E[mask]
             sigma = sigma_raw[mask] * MICHAUD_SIGMA_SCALE_CM2  # Apply scale factor
             
-            ax1.plot(E_valid, sigma, color=color, linewidth=3, label=label, zorder=3)
+            ax1.plot(
+                E_valid,
+                sigma,
+                color=color,
+                linewidth=3,
+                linestyle="-",
+                label=label,
+                zorder=3,
+            )
         
         # ax1.set_xlabel('Electron Energy (eV)')
         ax1.set_ylabel(r'Cross-section (cm$^2$)')
-        ax1.legend(loc='best')
+        ax1.legend(loc='best', frameon=False)
         ax1.set_xlim(1, 100)
+        ax1.text(
+            -0.14,
+            1.02,
+            "(a)",
+            transform=ax1.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=float(FONTSIZE),
+            clip_on=False,
+        )
         
         print("Loaded intermolecular modes from Table 2")
         
@@ -290,17 +334,39 @@ def plot_vibrational_excitations():
             E_valid = E[mask]
             sigma = sigma_raw[mask] * MICHAUD_SIGMA_SCALE_CM2  # Apply scale factor
             
-            ax2.plot(E_valid, sigma, color=color, linewidth=3, label=label, zorder=3)
+            ax2.plot(
+                E_valid,
+                sigma,
+                color=color,
+                linewidth=3,
+                linestyle="-",
+                label=label,
+                zorder=3,
+            )
         
         ax2.set_xlabel('Electron energy ($T$; eV)')
         ax2.set_ylabel(r'Cross-section (cm$^2$)')
-        ax2.legend(loc='best')
+        ax2.legend(loc='best', frameon=False)
         ax2.set_xlim(1, 100)
+        ax2.text(
+            -0.14,
+            1.02,
+            "(b)",
+            transform=ax2.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=float(FONTSIZE),
+            clip_on=False,
+        )
         
         print("Loaded intramolecular modes from Table 3")
         
     except Exception as e:
         print(f"Error loading intramolecular modes: {e}")
+
+    for ax in (ax1, ax2):
+        ax.xaxis.set_major_locator(MultipleLocator(20))
+        ax.xaxis.set_minor_locator(MultipleLocator(10))
     
     plt.tight_layout()
     
@@ -356,7 +422,7 @@ def plot_vibrational_energy_distributions():
         ax1.plot(omega_range * 1000, g_omega, color=color, linewidth=3, label=label, zorder=3)
     
     ax1.set_ylabel('Probability Density (eV$^{-1}$)')
-    ax1.legend(loc='best')
+    ax1.legend(loc='best', frameon=False)
     ax1.set_xlim(0, 150)
     
     # ============== PANEL 2: INTRAMOLECULAR MODES ==============
@@ -372,7 +438,7 @@ def plot_vibrational_energy_distributions():
     
     ax2.set_xlabel('Energy Loss (eV)')
     ax2.set_ylabel('Probability Density (eV$^{-1}$)')
-    ax2.legend(loc='best')
+    ax2.legend(loc='best', frameon=False)
     ax2.set_xlim(0.15, 0.95)
     
     plt.tight_layout()
@@ -405,6 +471,8 @@ def plot_attachment_cross_section():
     ax.set_xlabel('Electron energy ($T$; eV)')
     ax.set_ylabel(r'Cross-section (cm$^2$)')
     ax.set_xlim(1, 10)
+    ax.xaxis.set_major_locator(MultipleLocator(2))
+    ax.xaxis.set_minor_locator(MultipleLocator(1))
     # ax.legend()
 
     plt.tight_layout()

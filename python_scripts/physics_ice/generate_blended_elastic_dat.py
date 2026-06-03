@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.ticker import AutoMinorLocator, LogFormatterMathtext, LogLocator, NullLocator
+from matplotlib.ticker import LogFormatterMathtext, LogLocator
 
 from constants import (
     BLEND_E_MAX,
@@ -60,20 +60,36 @@ E_MAX = BLEND_E_MAX  # extend a hair above 10 MeV
 
 def _apply_log_ticks(ax: plt.Axes, tick_size: int = FONTSIZE + 1) -> None:
     """Force visible major/minor ticks on log-log plots."""
+    ax.xaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0,), numticks=50))
+    ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0,), numticks=50))
     ax.xaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
-    ax.xaxis.set_minor_locator(NullLocator())
-    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1))
-    ax.tick_params(axis="both", which="major", labelsize=tick_size, length=8, width=1.2, direction="in")
-    ax.tick_params(axis="both", which="minor", length=4, width=1.0, direction="in")
+    ax.yaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
+    ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1, numticks=200))
+    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1, numticks=200))
+    ax.tick_params(
+        axis="both",
+        which="major",
+        labelsize=tick_size,
+        length=8,
+        width=1.2,
+        direction="in",
+        bottom=True,
+        top=False,
+        left=True,
+        right=False,
+    )
+    ax.tick_params(
+        axis="both",
+        which="minor",
+        length=4,
+        width=1.0,
+        direction="in",
+        bottom=True,
+        top=False,
+        left=True,
+        right=False,
+    )
 
-
-def _apply_semilog_ticks(ax: plt.Axes, tick_size: int = FONTSIZE + 1) -> None:
-    """Force visible major/minor ticks on semi-log-x plots."""
-    ax.xaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
-    ax.xaxis.set_minor_locator(NullLocator())
-    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
-    ax.tick_params(axis="both", which="major", labelsize=tick_size, length=8, width=1.2, direction="in")
-    ax.tick_params(axis="both", which="minor", length=4, width=1.0, direction="in")
 
 
 def load_michaud():
@@ -210,29 +226,9 @@ def plot_michaud_transport_vs_total(E_m: np.ndarray, sigma_tr: np.ndarray, sigma
     x_ticks = [10.0**k for k in range(0, 8)]  # 1e0 ... 1e7
     ax.set_xticks(x_ticks)
     _apply_log_ticks(ax, tick_size=tick_size)
-    ax.legend(loc="best", fontsize=legend_size)
+    ax.legend(loc="best", fontsize=legend_size, frameon=False)
     fig.tight_layout()
-    fig.savefig(OUTDIR / "diagnostic_sigma_michaud_transport_vs_total.png", dpi=200)
     fig.savefig(OUTDIR / "michaud_corrected_cross_sections.png", dpi=200)
-    plt.show()
-
-
-def plot_gamma_vs_energy(E_gamma: np.ndarray, gamma: np.ndarray, E_m: np.ndarray, gamma_m: np.ndarray) -> None:
-    """Plot gamma(E)=<cos(theta)> extracted from ELSEPA CDF and mapped to Michaud grid."""
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.semilogx(E_gamma, gamma, color="k", lw=2, label=r"ELSEPA-derived $\gamma(E)$")
-    ax.semilogx(E_m, gamma_m, color="tab:blue", lw=1.8, ls="--", label=r"$\gamma(E)$ mapped to Michaud grid")
-    ax.set_xlabel("Energy (eV)")
-    ax.set_ylabel(r"$\gamma(E)=\langle\cos\theta\rangle$")
-    ax.set_xlim(1.0, E_MAX)
-    ax.set_ylim(0.0, 1.0)
-    x_ticks = [10.0**k for k in range(0, 8)]  # 1e0 ... 1e7
-    ax.set_xticks(x_ticks)
-    _apply_semilog_ticks(ax)
-    ax.set_title(r"ELSEPA-Derived Elastic Anisotropy $\gamma(E)$")
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(OUTDIR / "diagnostic_gamma_elsepa.png", dpi=200)
     plt.show()
 
 
@@ -341,79 +337,30 @@ def blend_sigma(E_grid, E_mich, s_mich, E_elsepa, s_elsepa, E0=ELASTIC_BLEND_E0,
     return s_bl
 
 
-def _diag_set(tag: str, E_grid: np.ndarray, s_bl: np.ndarray, s_ref: np.ndarray, ref_label: str,
-              E_m: np.ndarray, s_m: np.ndarray, E_ref_tab: np.ndarray,
-              s_ref_tab: np.ndarray, cdf: np.ndarray | None,
-              michaud_label: str = "Michaud+03", blended_label: str = "Blended"):
-    """Emit a family of diagnostic plots for one high-energy reference (ELSEPA or SR)."""
-    mask_low = E_grid <= 200.0
-    mask_high = E_grid >= 200.0
-
-    # Total σ plot
-    fig0, ax0 = plt.subplots(figsize=(10, 6))
-    if tag.startswith("elsepa_muffin"):
-        # Match legacy elastic_cross_sections style.
-        ax0.loglog(E_m, s_m, color="lightgray", linewidth=5, label=michaud_label, zorder=3)
-        ax0.loglog(E_ref_tab, s_ref_tab, color="slategray", linewidth=5, label="ELSEPA (muffin)", zorder=3)
-        ax0.loglog(E_grid, s_bl, "k-.", linewidth=2, label=blended_label, zorder=3)
-        ax0.axvspan(ELASTIC_BLEND_E0, ELASTIC_BLEND_T, color="lightgray", alpha=0.3, zorder=0)
-        ax0.set_xlabel(r"Electron Energy ($T$; eV)")
-        ax0.set_ylabel(r"Cross-Section (cm$^2$)")
-        ax0.legend(loc="best")
-    else:
-        ax0.loglog(E_ref_tab, s_ref_tab, label=ref_label, color="slategray", lw=2.0, ls="-")
-        ax0.loglog(E_m, s_m, label="Michaud (reported)", color="lightgray", lw=2.0, ls="-")
-        ax0.loglog(E_grid, s_bl, label="Blended full (2 eV–10 MeV)", color="k", lw=2.0, ls="-.")
-        ax0.axvline(200.0, color="0.6", ls=":", lw=1.5)
-        ax0.set_xlabel("Energy (eV)")
-        ax0.set_ylabel(r"$\sigma_{\mathrm{elastic}}$ (cm$^2$)")
-        ax0.set_title(rf"Total $\sigma_{{\mathrm{{elastic}}}}$ (Michaud/{ref_label})")
-        ax0.legend()
-
-    ax0.set_xlim(1.0, E_MAX)
+def plot_elastic_cross_sections(
+    E_grid: np.ndarray,
+    s_bl: np.ndarray,
+    E_m: np.ndarray,
+    s_m: np.ndarray,
+    E_ref: np.ndarray,
+    s_ref: np.ndarray,
+) -> None:
+    """Generate the main blended elastic cross-section plot."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.loglog(E_m, s_m, color="lightgray", linewidth=5, label="Michaud+03", zorder=3)
+    ax.loglog(E_ref, s_ref, color="slategray", linewidth=5, label="ELSEPA (muffin)", zorder=3)
+    ax.loglog(E_grid, s_bl, "k-.", linewidth=2, label="Blended", zorder=3)
+    ax.axvspan(ELASTIC_BLEND_E0, ELASTIC_BLEND_T, color="lightgray", alpha=0.3, zorder=0)
+    ax.set_xlabel(r"Electron Energy ($T$; eV)")
+    ax.set_ylabel(r"Cross-Section (cm$^2$)")
+    ax.legend(loc="best", frameon=False)
+    ax.set_xlim(1.0, E_MAX)
     x_ticks = [10.0**k for k in range(0, 8)]  # 1e0 ... 1e7
-    ax0.set_xticks(x_ticks)
-    _apply_log_ticks(ax0)
-    fig0.tight_layout()
-    fig0.savefig(OUTDIR / f"diagnostic_sigma_models_{tag}.png", dpi=200)
+    ax.set_xticks(x_ticks)
+    _apply_log_ticks(ax)
+    fig.tight_layout()
+    fig.savefig(OUTDIR / "elastic_cross_sections.png", dpi=200)
     plt.show()
-
-    # Window diagnostics
-    mask_win = (E_grid >= 100.0) & (E_grid <= 494.0)
-    sigma_ref_win = np.interp(E_grid[mask_win], E_ref_tab, s_ref_tab)
-    sigma_mich_win = np.interp(E_grid[mask_win], E_m, s_m)
-
-    fig1, ax1 = plt.subplots(figsize=(7.5, 4.5))
-    ax1.plot(E_grid[mask_win], sigma_ref_win, label=f"{ref_label} total", color="slategray")
-    ax1.plot(E_grid[mask_win], s_bl[mask_win], label="Blended", color="k", ls="-.")
-    ax1.plot(E_grid[mask_win], sigma_mich_win, label="Michaud (interp.)", color="lightgray", ls=":")
-    ax1.set_xlabel("Energy (eV)")
-    ax1.set_ylabel(r"$\sigma$ (cm$^2$)")
-    ax1.set_title(rf"Elastic $\sigma$ in transition window (100–494 eV) – {ref_label}")
-    ax1.minorticks_on()
-    ax1.tick_params(axis="both", which="major", length=8, width=1.2, direction="in")
-    ax1.tick_params(axis="both", which="minor", length=4, width=1.0, direction="in")
-    ax1.legend()
-    fig1.tight_layout()
-    fig1.savefig(OUTDIR / f"diagnostic_sigma_window_{tag}.png", dpi=200)
-    plt.show()
-
-    fig2, ax2 = plt.subplots(figsize=(7.5, 3.5))
-    ax2.plot(E_grid[mask_win], s_bl[mask_win] / np.maximum(sigma_ref_win, np.finfo(float).tiny), color="tab:blue")
-    ax2.set_xlabel("Energy (eV)")
-    ax2.set_ylabel(rf"$\sigma_{{\mathrm{{blend}}}} / \sigma_{{{ref_label}}}$")
-    ax2.set_title(rf"Scaling factor vs {ref_label} DCS (100–494 eV)")
-    ax2.minorticks_on()
-    ax2.tick_params(axis="both", which="major", length=8, width=1.2, direction="in")
-    ax2.tick_params(axis="both", which="minor", length=4, width=1.0, direction="in")
-    fig2.tight_layout()
-    fig2.savefig(OUTDIR / f"diagnostic_scaling_window_{tag}.png", dpi=200)
-    plt.show()
-
-
-def diagnostics(E_grid, s_bl_elsepa, s_bl_sr, E_m, s_m, E_e, s_e, s_sr, cdf):
-    _diag_set("elsepa_muffin", E_grid, s_bl_elsepa, s_e, "ELSEPA (muffin)", E_m, s_m, E_e, s_e, cdf)
-    _diag_set("sr", E_grid, s_bl_sr, s_sr, "SR", E_m, s_m, E_grid, s_sr, None)
 
 
 def main():
@@ -455,11 +402,10 @@ def main():
     # gamma(E) is extracted from ELSEPA muffin angular CDF at all available ELSEPA energies,
     # then sampled onto each Michaud energy point.
     E_gamma, gamma_elsepa = build_elsepa_gamma_table(cdf_raw)
-    sigma_tot_michaud, gamma_on_michaud_grid = reconstruct_sigma_total_from_transport(
+    sigma_tot_michaud, _ = reconstruct_sigma_total_from_transport(
         E_m, s_m, E_gamma, gamma_elsepa
     )
     plot_michaud_transport_vs_total(E_m, s_m, sigma_tot_michaud)
-    plot_gamma_vs_energy(E_gamma, gamma_elsepa, E_m, gamma_on_michaud_grid)
 
     # Save auxiliary reconstruction tables (same sigma table convention where applicable).
     scale_tab = 1.0e16
@@ -480,15 +426,7 @@ def main():
     s_bl_elsepa = blend_sigma(E_grid, E_m, s_m, E_e, s_e)
     s_bl_elsepa_corrected = blend_sigma(E_grid, E_m, sigma_tot_michaud, E_e, s_e)
     s_bl_sr = blend_sigma(E_grid, E_m, s_m, E_grid, s_sr)
-
-    diagnostics(E_grid, s_bl_elsepa, s_bl_sr, E_m, s_m, E_e, s_e, s_sr, cdf_hi)
-    _diag_set(
-        "elsepa_muffin_corrected",
-        E_grid, s_bl_elsepa_corrected, s_e, "ELSEPA (muffin)",
-        E_m, sigma_tot_michaud, E_e, s_e, cdf_hi,
-        michaud_label="Michaud+03 ($\sigma_{\\rm{tot}}$)",
-        blended_label="Blended"
-    )
+    plot_elastic_cross_sections(E_grid, s_bl_elsepa, E_m, s_m, E_e, s_e)
 
     # Save ONLY the six requested files:
     mask_low = E_grid <= E_SPLIT

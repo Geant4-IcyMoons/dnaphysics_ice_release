@@ -209,9 +209,10 @@ if (auto* ePM = G4Electron::ElectronDefinition()->GetProcessManager()) {
 }
   //****** END ICE *****
 
-  // -------- High-energy fallback (>= 10 MeV): standard EM option4 models --------
+  // -------- Standard EM fallback: brems from 1 MeV, other high-EM from 10 MeV --------
   {
     const G4double kHighMin = 10. * MeV;
+    const G4double kBremMin = 1. * MeV;
     const G4double kHighMax = 1. * GeV;
 
     // Multiple scattering (>= 10 MeV)
@@ -238,11 +239,11 @@ if (auto* ePM = G4Electron::ElectronDefinition()->GetProcessManager()) {
     ionisation->SetEmModel(highIonModel);
     ph->RegisterProcess(ionisation, G4Electron::ElectronDefinition());
 
-    // Bremsstrahlung (>= 10 MeV)
+    // Bremsstrahlung (>= 1 MeV)
     auto* brem = new G4eBremsstrahlung();
-    brem->SetMinKinEnergy(kHighMin);
+    brem->SetMinKinEnergy(kBremMin);
     auto* bremModel = new G4SeltzerBergerModel();
-    bremModel->SetLowEnergyLimit(kHighMin);
+    bremModel->SetLowEnergyLimit(kBremMin);
     bremModel->SetHighEnergyLimit(kHighMax);
     brem->SetEmModel(bremModel);
     ph->RegisterProcess(brem, G4Electron::ElectronDefinition());

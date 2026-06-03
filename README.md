@@ -52,6 +52,7 @@ The principal directories in the release are:
 
 - `cross_sections/`
   Distributed `.dat` files required by the custom ice transport models.
+  See `cross_sections/README.md`.
 - `src/`
   Geant4 model implementations, physics lists, and application code.
 - `include/`
@@ -60,12 +61,21 @@ The principal directories in the release are:
   Maintained example macros, run scripts, and example-specific plotting helpers.
 - `python_scripts/plotting/`
   Diagnostics and plotting utilities for ROOT outputs and tabulated cross sections.
+  See `python_scripts/plotting/README.md`.
 - `python_scripts/physics_ice/`
   Utilities for generating, transforming, and visualizing the distributed ice cross sections.
+  See `python_scripts/physics_ice/README.md`.
 - `python_scripts/europa/`
   Europa energy-library and macro-generation utilities.
+- `python_scripts/europa_latlon/`
+  Europa latitude-longitude post-processing utilities for derived map, dose, and escape-fraction products.
+  See `python_scripts/europa_latlon/README.md`.
+- `europa_latlon_data/`
+  Compact derived Europa latitude-longitude analysis products and diagnostic figures.
+  See `europa_latlon_data/README.md`.
 - `tabular/`
   Tabular source data used in the construction of selected distributed cross sections.
+  See `tabular/README.md`.
 
 ## Software Requirements
 
@@ -310,4 +320,54 @@ This workflow:
 
 - constructs a shared global energy grid
 - generates one Geant4 macro per global energy
-- writes offline weighting tables that map loc
+- writes offline weighting tables that map local cell spectra onto the shared global energies
+- provides a runner for one-ROOT-file-per-energy production
+
+For detailed generator documentation, see:
+
+- `python_scripts/europa/README.md`
+
+## Europa Latitude-Longitude Analysis Products
+
+Version `v1.0.1` adds a compact Europa latitude-longitude analysis bundle.
+
+The analysis code is distributed under:
+
+- `python_scripts/europa_latlon/`
+
+The derived data products and diagnostic figures are distributed under:
+
+- `europa_latlon_data/`
+
+The included data products are intended for plotting and post-processing rather than as raw transport output. They include:
+
+- `latlon_metric_maps.npz`
+- `latlon_metrics_database.npz`
+- `latlon_metrics_summary.csv`
+- leading and trailing hemisphere diagnostic figures
+- leading and trailing pixel dose-profile NPZ files
+
+The map NPZ stores the full latitude-longitude-depth dose cube as `dose_profile_map_mgy_per_yr` with shape `(latitude, longitude, depth)`.
+
+To regenerate the packaged hemisphere plots from the saved map NPZ:
+
+```bash
+python3 python_scripts/europa_latlon/analyze_europa_latlon_metrics.py \
+  plot-from-npz \
+  --maps-npz europa_latlon_data/latlon_metric_maps.npz \
+  --out-dir europa_latlon_data
+```
+
+For data-product details, see:
+
+- `europa_latlon_data/README.md`
+- `python_scripts/europa_latlon/README.md`
+
+To export explicit pixel-dose profile NPZ files from `latlon_metric_maps.npz`:
+
+```bash
+python3 python_scripts/europa_latlon/export_pixel_dose_profiles.py \
+  --maps-npz europa_latlon_data/latlon_metric_maps.npz \
+  --out-dir europa_latlon_data \
+  --combined
+```

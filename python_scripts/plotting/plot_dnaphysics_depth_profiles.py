@@ -121,7 +121,7 @@ def _z_edges_from_file(path: Path) -> np.ndarray:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Depth profiles from dnaphysics ROOT output.")
-    ap.add_argument("--root", type=Path, default=Path("build/dna.root"), help="Path to dna.root")
+    ap.add_argument("--root", type=Path, default=Path("build/europa_test_e1.root"), help="Path to dna.root")
     ap.add_argument("--density-g-cm3", type=float, default=0.917, help="Ice density (g/cm^3)")
     ap.add_argument("--n-per-bin", type=int, default=1000, help="Electrons per energy bin in the macro")
     ap.add_argument("--delta-e", type=float, default=None, help="Energy bin width (MeV). If omitted, inferred.")

@@ -24,9 +24,6 @@ import argparse
 import csv
 import gzip
 from pathlib import Path
-import sys
-import os
-
 
 import numpy as np
 
@@ -41,8 +38,7 @@ from generate_europa_electron_bins import (
     electron_spectrum_fit,
 )
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from physics_ice.constants import TOP_ROOT
+from constants import GEANT4_PROJECTS_ROOT
 
 
 def _lat_lon_centers(n_lat: int, n_lon: int) -> tuple[np.ndarray, np.ndarray]:
@@ -674,12 +670,12 @@ def main() -> None:
             "energy assignment/scaling tables for Europa."
         )
     )
-    ap.add_argument("--n-lat", type=int, default=90, help="Number of latitude bins.")
-    ap.add_argument("--n-lon", type=int, default=90, help="Number of longitude bins.")
+    ap.add_argument("--n-lat", type=int, default=30, help="Number of latitude bins.")
+    ap.add_argument("--n-lon", type=int, default=30, help="Number of longitude bins.")
     ap.add_argument(
         "--tol",
         type=float,
-        default=1.0e-4,
+        default=1.0e-3,
         help=(
             "Tolerance for auto log-bin search, enforced on each valid lat/lon "
             "cell range using the Riemann/integral ratio."
@@ -700,8 +696,8 @@ def main() -> None:
     ap.add_argument(
         "--global-e-min",
         type=float,
-        default=None,
-        help="Optional forced global minimum energy in MeV. Default: min valid cell E_min.",
+        default=0.01,
+        help="Optional forced global minimum energy in MeV.",
     )
     ap.add_argument(
         "--leading-cap",
@@ -727,7 +723,7 @@ def main() -> None:
         dest="n_per_energy_thresholds",
         nargs="+",
         type=float,
-        default=None,
+        default=[0.1, 1.0, 10.0, 100.0],
         help=(
             "Optional piecewise upper thresholds in MeV for per-bin sim_particles. "
             "Example: 0.1 1 10 100."
@@ -739,7 +735,7 @@ def main() -> None:
         dest="n_per_energy_values",
         nargs="+",
         type=int,
-        default=None,
+        default=[10000, 1000, 500, 50],
         help=(
             "Optional piecewise sim_particles values matching thresholds. "
             "Example: 10000 1000 100 10."
@@ -748,26 +744,26 @@ def main() -> None:
     ap.add_argument(
         "--dna-physics",
         choices=("water", "ice_hex", "ice_am"),
-        default="ice_hex",
+        default="ice_am",
         help="Default DNA_PHYSICS to use in the generated runner script.",
     )
-    ap.add_argument("--threads", type=int, default=12, help="Macro thread count.")
+    ap.add_argument("--threads", type=int, default=200, help="Macro thread count.")
     ap.add_argument(
         "--x-half-mm",
         type=float,
-        default=500.0,
+        default=1000.0,
         help="Ice half-width in X (mm). Ice is centered at x=0.",
     )
     ap.add_argument(
         "--y-half-mm",
         type=float,
-        default=500.0,
+        default=1000.0,
         help="Ice half-width in Y (mm). Ice is centered at y=0.",
     )
     ap.add_argument(
         "--z-thickness-mm",
         type=float,
-        default=1000.0,
+        default=10000.0,
         help="Ice thickness in Z (mm). Slab spans z=[0, z_thickness].",
     )
     ap.add_argument(
@@ -785,7 +781,7 @@ def main() -> None:
     ap.add_argument(
         "--source-z-mm",
         type=float,
-        default=-0.01,
+        default=-0.001,
         help="Source z position in mm. Default is just above slab start at z=0.",
     )
     ap.add_argument("--source-dir-x", type=float, default=0.0, help="Source direction x.")
@@ -796,7 +792,7 @@ def main() -> None:
         "--angular_dist",
         dest="angular_dist",
         choices=("none", "cos"),
-        default="none",
+        default="cos",
         help=(
             "Primary angular mode: 'none' keeps a fixed /gps/direction; "
             "'cos' uses /gps/ang/type cos with theta in [0,90] deg and phi in [0,360] deg "
@@ -806,7 +802,7 @@ def main() -> None:
     ap.add_argument(
         "--manual-density-gcm3",
         type=float,
-        default=None,
+        default=0.5,
         help=(
             "If set, macro uses /dna/test/setMatDens with this density (g/cm3). "
             "If omitted, use DNA_PHYSICS-driven default density."
@@ -834,8 +830,8 @@ def main() -> None:
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    leading_map = _load_map(TOP_ROOT / "dnaphysics-ice/python_scripts/europa/e_bombardment_leading")
-    trailing_map = _load_map(TOP_ROOT / "dnaphysics-ice/python_scripts/europa/e_bombardment_trailing")
+    leading_map = _load_map(GEANT4_PROJECTS_ROOT / "e_bombardment_leading")
+    trailing_map = _load_map(GEANT4_PROJECTS_ROOT / "e_bombardment_trailing")
 
     if leading_map.ndim != 2:
         raise ValueError(f"Expected 2D leading map, got shape {leading_map.shape}")

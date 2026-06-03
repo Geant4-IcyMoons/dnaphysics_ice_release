@@ -41,6 +41,7 @@ from constants import (
     ICE_HEXAGONAL_DENSITY_G_CM3,
     N,
     OUTPUT_DIR,
+    PROJECT_ROOT,
     RC_BASE_ELASTIC,
     MICHAUD_SIGMA_SCALE_CM2,
     MELTON_SIGMA_SCALE_CM2,
@@ -120,12 +121,12 @@ def _interp_loglog(x: np.ndarray, y: np.ndarray, x_new: np.ndarray) -> np.ndarra
 
 def _units_and_label(units: str, density: float, dedx: np.ndarray) -> tuple[np.ndarray, str]:
     if units == "ev_ang":
-        return dedx * EV_NM_TO_EV_ANG, r"Stopping Power (eV/$\AA$)"
+        return dedx * EV_NM_TO_EV_ANG, r"S (eV/$\AA$)"
     if units == "mev_cm":
-        return dedx * EV_NM_TO_MEV_CM, "Stopping Power (MeV/cm)"
+        return dedx * EV_NM_TO_MEV_CM, "S (MeV/cm)"
     if units == "mev_cm2_g":
-        return (dedx * EV_NM_TO_MEV_CM) / density, "Mass Stopping Power (MeV cm^2/g)"
-    return dedx, "Stopping Power (eV/nm)"
+        return (dedx * EV_NM_TO_MEV_CM) / density, "Mass Stopping power (MeV cm^2/g)"
+    return dedx, "Stopping power (eV/nm)"
 
 
 def _load_table(path: Path) -> np.ndarray:
@@ -138,10 +139,21 @@ def _resolve_wvalue_path(path_like: str | Path) -> Path | None:
     candidates: list[Path] = [raw]
     if raw.suffix == "":
         candidates.append(raw.with_suffix(".txt"))
+    alias_map = {
+        "wvalue_water_10MeV": "wvalue_water.txt",
+        "wvalue_hex_10MeV": "wvalue_ice_hex.txt",
+        "wvalue_am_10MeV": "wvalue_ice_am.txt",
+    }
+    raw_stem = raw.stem
+    if raw_stem in alias_map:
+        alias = Path(alias_map[raw_stem])
+        candidates.append(alias)
     if not raw.is_absolute():
         prefixed = []
         for cand in candidates:
             prefixed.append(Path("build") / cand)
+            prefixed.append(PROJECT_ROOT / cand)
+            prefixed.append(PROJECT_ROOT / "build" / cand)
         candidates.extend(prefixed)
 
     seen = set()
@@ -159,7 +171,7 @@ def _resolve_wvalue_path(path_like: str | Path) -> Path | None:
     return None
 
 
-def _load_wvalue_curve(path: Path) -> tuple[np.ndarray, np.ndarray]:
+def _load_wvalue_curve(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     data = np.loadtxt(path, dtype=float)
     data = np.atleast_2d(data)
     if data.shape[1] < 4:
@@ -168,17 +180,31 @@ def _load_wvalue_curve(path: Path) -> tuple[np.ndarray, np.ndarray]:
         )
 
     # Keep the latest entry for each energy (files are append-only across runs).
-    latest: dict[float, float] = {}
+    latest: dict[float, tuple[float, float | None]] = {}
     for row in data:
         e = float(row[0])
         w = float(row[3])
-        latest[e] = w
+        w_err = float(row[-1]) if data.shape[1] >= 5 else None
+        latest[e] = (w, w_err)
 
     energies = np.asarray(sorted(latest.keys()), dtype=float)
-    wvals = np.asarray([latest[e] for e in energies], dtype=float)
+    wvals = np.asarray([latest[e][0] for e in energies], dtype=float)
+    if data.shape[1] >= 5:
+        werrs = np.asarray(
+            [
+                np.nan if latest[e][1] is None else float(latest[e][1])
+                for e in energies
+            ],
+            dtype=float,
+        )
+    else:
+        werrs = None
 
     valid = np.isfinite(energies) & np.isfinite(wvals) & (energies > 0) & (wvals > 0)
-    return energies[valid], wvals[valid]
+    if werrs is not None:
+        valid &= np.isfinite(werrs) & (werrs >= 0)
+        return energies[valid], wvals[valid], werrs[valid]
+    return energies[valid], wvals[valid], None
 
 
 def _max_table_energy(path: Path) -> float:
@@ -214,6 +240,26 @@ def _attachment_energy_loss_xs(
     return sigma_interp * energy_grid
 
 
+def _vib_sigma_xs(energy_grid: np.ndarray, path: Path) -> np.ndarray:
+    data = _load_table(path)
+    energies = data[:, 0]
+    sigma_levels = data[:, 1:]
+    if sigma_levels.shape[1] != VIB_ELOSS_EEV.size:
+        raise ValueError(f"Unexpected vib table shape in {path}")
+    sigma_cm2 = sigma_levels * MICHAUD_SIGMA_SCALE_CM2
+    sigma_total = np.sum(sigma_cm2, axis=1)
+    return _interp_loglog(energies, sigma_total, energy_grid)
+
+
+def _attachment_sigma_xs(
+    energy_grid: np.ndarray, path: Path, sigma_scale_cm2: float
+) -> np.ndarray:
+    data = _load_table(path)
+    energies = data[:, 0]
+    sigma = data[:, 1] * sigma_scale_cm2
+    return _interp_loglog(energies, sigma, energy_grid)
+
+
 def _excitation_energy_loss_xs(energy_grid: np.ndarray, path: Path) -> np.ndarray:
     data = _load_table(path)
     energies = data[:, 0]
@@ -229,6 +275,19 @@ def _excitation_energy_loss_xs(energy_grid: np.ndarray, path: Path) -> np.ndarra
         sigma_i = _interp_loglog(energies, sigma_cm2[:, i], energy_grid)
         eloss_xs += sigma_i * e_loss
     return eloss_xs
+
+
+def _excitation_sigma_xs(energy_grid: np.ndarray, path: Path) -> np.ndarray:
+    data = _load_table(path)
+    energies = data[:, 0]
+    sigma_levels = data[:, 1:1 + EMFI_EXCITATION_EEV.size]
+    if sigma_levels.shape[1] != EMFI_EXCITATION_EEV.size:
+        raise ValueError(f"Unexpected excitation table shape in {path}")
+
+    scale_cm2 = EMFIETZOGLOU_SCALE_1E16 * 1.0e-16
+    sigma_cm2 = sigma_levels * scale_cm2
+    sigma_total = np.sum(sigma_cm2, axis=1)
+    return _interp_loglog(energies, sigma_total, energy_grid)
 
 
 def _trapz_nonuniform(x: np.ndarray, y: np.ndarray) -> float:
@@ -300,6 +359,20 @@ def _integrate_dcs_eloss(e_vals: list[float], sigma_vals: list[list[float]]) -> 
     return eloss
 
 
+def _integrate_dcs_sigma(e_vals: list[float], sigma_vals: list[list[float]]) -> float:
+    if len(e_vals) < 2:
+        return 0.0
+    e = np.asarray(e_vals, dtype=float)
+    sigma = np.asarray(sigma_vals, dtype=float)
+    scale_cm2 = EMFIETZOGLOU_SCALE_1E16 * 1.0e-16
+    sigma *= scale_cm2
+
+    sigma_total = 0.0
+    for j in range(sigma.shape[0]):
+        sigma_total += _simpson_nonuniform(e, sigma[j])
+    return sigma_total
+
+
 def _dcs_energy_loss_xs_table(path: Path) -> tuple[np.ndarray, np.ndarray]:
     _ensure_exists(path)
     energies = []
@@ -344,6 +417,52 @@ def _dcs_energy_loss_xs_table(path: Path) -> tuple[np.ndarray, np.ndarray]:
         eloss_xs.append(_integrate_dcs_eloss(e_vals, sigma_vals))
 
     return np.asarray(energies, dtype=float), np.asarray(eloss_xs, dtype=float)
+
+
+def _dcs_sigma_xs_table(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    _ensure_exists(path)
+    energies = []
+    sigma_xs = []
+
+    current_e = None
+    e_vals: list[float] = []
+    sigma_vals: list[list[float]] = []
+    n_channels = None
+
+    with open(path, "r") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            e = float(parts[0])
+            transfer = float(parts[1])
+            if n_channels is None:
+                n_channels = len(parts) - 2
+                sigma_vals = [[] for _ in range(n_channels)]
+            if len(parts) < 2 + n_channels:
+                continue
+            sigs = [float(val) for val in parts[2 : 2 + n_channels]]
+
+            if current_e is None:
+                current_e = e
+            if e != current_e:
+                energies.append(current_e)
+                sigma_xs.append(_integrate_dcs_sigma(e_vals, sigma_vals))
+                current_e = e
+                e_vals = []
+                sigma_vals = [[] for _ in range(n_channels)]
+
+            e_vals.append(transfer)
+            for j in range(n_channels):
+                sigma_vals[j].append(sigs[j])
+
+    if current_e is not None:
+        energies.append(current_e)
+        sigma_xs.append(_integrate_dcs_sigma(e_vals, sigma_vals))
+
+    return np.asarray(energies, dtype=float), np.asarray(sigma_xs, dtype=float)
 
 
 def _integrate_ion_dcs_moments(
@@ -601,6 +720,17 @@ def _plot(
     energy_grid: np.ndarray,
     water_dedx: np.ndarray,
     water_w: np.ndarray,
+    water_mfp_nm: np.ndarray,
+    water_color,
+    water_dom_sp: np.ndarray | None,
+    water_dom_w: np.ndarray | None,
+    water_dom_mfp: np.ndarray | None,
+    am_dom_sp: np.ndarray | None,
+    am_dom_w: np.ndarray | None,
+    am_dom_mfp: np.ndarray | None,
+    hex_dom_sp: np.ndarray | None,
+    hex_dom_w: np.ndarray | None,
+    hex_dom_mfp: np.ndarray | None,
     ice_series: list[dict],
     units: str,
     out_path: Path,
@@ -610,14 +740,62 @@ def _plot(
     ice_w_emax_by_type: dict[str, float] | None = None,
     w_text_curves: dict[str, dict[str, np.ndarray]] | None = None,
 ) -> None:
+    def _add_dominance_spans(ax, dom, ymin, ymax, colors, alpha=0.5):
+        if dom is None:
+            return
+        dom = np.asarray(dom)
+        valid = dom >= 0
+        if not np.any(valid):
+            return
+        start = None
+        current = None
+        for i in range(dom.size):
+            if not valid[i]:
+                if start is not None:
+                    end = i - 1
+                    x0 = energy_grid[start]
+                    x1 = energy_grid[end + 1] if end + 1 < energy_grid.size else energy_grid[end]
+                    ax.axvspan(x0, x1, ymin=ymin, ymax=ymax, color=colors[int(current)], alpha=alpha, zorder=0)
+                    start = None
+                    current = None
+                continue
+            if current is None:
+                start = i
+                current = dom[i]
+                continue
+            if dom[i] != current:
+                end = i - 1
+                x0 = energy_grid[start]
+                x1 = energy_grid[end + 1] if end + 1 < energy_grid.size else energy_grid[end]
+                ax.axvspan(x0, x1, ymin=ymin, ymax=ymax, color=colors[int(current)], alpha=alpha, zorder=0)
+                start = i
+                current = dom[i]
+        if start is not None:
+            end = dom.size - 1
+            x0 = energy_grid[start]
+            x1 = energy_grid[end]
+            ax.axvspan(x0, x1, ymin=ymin, ymax=ymax, color=colors[int(current)], alpha=alpha, zorder=0)
+
     water_plot, ylabel = _units_and_label(units, rho_water, water_dedx)
-    fig, (ax_sp, ax_w) = plt.subplots(
-        2,
+    fig, (ax_sp, ax_w, ax_mfp) = plt.subplots(
+        3,
         1,
-        figsize=(10, 10),
+        figsize=(10, 13),
         sharex=True,
-        gridspec_kw={"height_ratios": [3.0, 2.0]},
+        gridspec_kw={"height_ratios": [1.0, 1.0, 1.0]},
     )
+    # Grayscale dominance bands: lightest=vib/att, then excitation, then ionization.
+    dom_colors = ["#f0f0f0", "#cfcfcf", "#a9a9a9"]
+    # Top third: water, middle: amorphous, bottom: hexagonal
+    _add_dominance_spans(ax_sp, water_dom_sp, 2.0 / 3.0, 1.0, dom_colors)
+    _add_dominance_spans(ax_sp, am_dom_sp, 1.0 / 3.0, 2.0 / 3.0, dom_colors)
+    _add_dominance_spans(ax_sp, hex_dom_sp, 0.0, 1.0 / 3.0, dom_colors)
+    _add_dominance_spans(ax_w, water_dom_w, 2.0 / 3.0, 1.0, dom_colors)
+    _add_dominance_spans(ax_w, am_dom_w, 1.0 / 3.0, 2.0 / 3.0, dom_colors)
+    _add_dominance_spans(ax_w, hex_dom_w, 0.0, 1.0 / 3.0, dom_colors)
+    _add_dominance_spans(ax_mfp, water_dom_mfp, 2.0 / 3.0, 1.0, dom_colors)
+    _add_dominance_spans(ax_mfp, am_dom_mfp, 1.0 / 3.0, 2.0 / 3.0, dom_colors)
+    _add_dominance_spans(ax_mfp, hex_dom_mfp, 0.0, 1.0 / 3.0, dom_colors)
 
     valid_w = np.isfinite(water_plot) & (water_plot > 0) & np.isfinite(energy_grid)
     if water_emax is not None:
@@ -625,10 +803,10 @@ def _plot(
     ax_sp.loglog(
         energy_grid[valid_w],
         water_plot[valid_w],
-        color="black",
+        color=water_color,
         linewidth=3,
         label="Water",
-        zorder=3,
+        zorder=1,
     )
 
     for idx, series in enumerate(ice_series):
@@ -645,17 +823,19 @@ def _plot(
             linewidth=3,
             ls=series.get("ls", "-"),
             label=series.get("label", "Ice"),
-            zorder=2,
+            zorder=3,
         )
 
     ax_sp.set_ylabel(ylabel)
-    ax_sp.legend(loc="best")
+    # Legend moved to figure-level below panels.
 
     water_w_energy = energy_grid
     water_w_vals = water_w
+    water_w_err = None
     if w_text_curves and "water" in w_text_curves:
         water_w_energy = w_text_curves["water"]["energy"]
         water_w_vals = w_text_curves["water"]["w"]
+        water_w_err = w_text_curves["water"].get("w_err")
     valid_wv = (
         np.isfinite(water_w_vals)
         & (water_w_vals > 0)
@@ -664,21 +844,39 @@ def _plot(
     )
     if water_w_emax is not None:
         valid_wv &= water_w_energy <= water_w_emax
+    if water_w_err is not None:
+        valid_werr = (
+            valid_wv
+            & np.isfinite(water_w_err)
+            & (water_w_vals - water_w_err > 0)
+        )
+        if np.any(valid_werr):
+            ax_w.fill_between(
+                water_w_energy[valid_werr],
+                water_w_vals[valid_werr] - water_w_err[valid_werr],
+                water_w_vals[valid_werr] + water_w_err[valid_werr],
+                color=water_color,
+                alpha=0.18,
+                linewidth=0,
+                zorder=0.8,
+            )
     ax_w.loglog(
         water_w_energy[valid_wv],
         water_w_vals[valid_wv],
-        color="black",
+        color=water_color,
         linewidth=3,
         label="Water",
-        zorder=3,
+        zorder=1,
     )
     for idx, series in enumerate(ice_series):
         ice_w_energy = energy_grid
         ice_w_vals = series["w_value"]
+        ice_w_err = None
         ice_type = series.get("ice_type")
         if w_text_curves and isinstance(ice_type, str) and ice_type in w_text_curves:
             ice_w_energy = w_text_curves[ice_type]["energy"]
             ice_w_vals = w_text_curves[ice_type]["w"]
+            ice_w_err = w_text_curves[ice_type].get("w_err")
         valid_iw = (
             np.isfinite(ice_w_vals)
             & (ice_w_vals > 0)
@@ -698,6 +896,22 @@ def _plot(
             max_w_e = float(ice_w_emax)
         if max_w_e is not None:
             valid_iw &= ice_w_energy <= max_w_e
+        if ice_w_err is not None:
+            valid_iw_err = (
+                valid_iw
+                & np.isfinite(ice_w_err)
+                & (ice_w_vals - ice_w_err > 0)
+            )
+            if np.any(valid_iw_err):
+                ax_w.fill_between(
+                    ice_w_energy[valid_iw_err],
+                    ice_w_vals[valid_iw_err] - ice_w_err[valid_iw_err],
+                    ice_w_vals[valid_iw_err] + ice_w_err[valid_iw_err],
+                    color=series.get("color", f"0.{35 + idx * 20:02d}"),
+                    alpha=0.18,
+                    linewidth=0,
+                    zorder=2.8,
+                )
         ax_w.loglog(
             ice_w_energy[valid_iw],
             ice_w_vals[valid_iw],
@@ -705,9 +919,9 @@ def _plot(
             linewidth=3,
             label=series.get("label", "Ice"),
             ls=series.get("ls", "-"),
-            zorder=2,
+            zorder=3,
         )
-    ax_w.set_xlabel("Electron energy ($T$; eV)")
+    ax_w.set_xlabel("")
     ax_w.set_ylabel("W (eV)")
     ax_w.set_xlim(energy_grid.min(), energy_grid.max())
     w_ticks = [25., 50., 100., 200.]
@@ -717,14 +931,129 @@ def _plot(
         FuncFormatter(lambda y, _: f"{int(round(y))}" if y >= 1 else f"{y:g}")
     )
     ax_w.yaxis.set_minor_locator(NullLocator())
+    ax_sp.text(
+        0.0,
+        1.04,
+        "(a)",
+        transform=ax_sp.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=float(FONTSIZE_24),
+        clip_on=False,
+    )
+    ax_w.text(
+        0.0,
+        1.04,
+        "(b)",
+        transform=ax_w.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=float(FONTSIZE_24),
+        clip_on=False,
+    )
 
-    plt.tight_layout()
+    valid_mfp = np.isfinite(water_mfp_nm) & (water_mfp_nm > 0) & np.isfinite(energy_grid)
+    if water_emax is not None:
+        valid_mfp &= energy_grid <= water_emax
+    ax_mfp.loglog(
+        energy_grid[valid_mfp],
+        water_mfp_nm[valid_mfp],
+        color=water_color,
+        linewidth=3,
+        label="Water",
+        zorder=1,
+    )
+    for idx, series in enumerate(ice_series):
+        ice_mfp = series.get("inelastic_mfp_nm")
+        if ice_mfp is None:
+            continue
+        valid_i = np.isfinite(ice_mfp) & (ice_mfp > 0) & np.isfinite(energy_grid)
+        ice_emax = series.get("emax")
+        if ice_emax is not None:
+            valid_i &= energy_grid <= ice_emax
+        ax_mfp.loglog(
+            energy_grid[valid_i],
+            ice_mfp[valid_i],
+            color=series.get("color", f"0.{35 + idx * 20:02d}"),
+            linewidth=3,
+            label=series.get("label", "Ice"),
+            ls=series.get("ls", "-"),
+            zorder=3,
+        )
+    ax_mfp.set_xlabel("Electron energy ($T$; eV)")
+    ax_mfp.set_ylabel("IMFP (nm)")
+    ax_mfp.text(
+        0.0,
+        1.04,
+        "(c)",
+        transform=ax_mfp.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=float(FONTSIZE_24),
+        clip_on=False,
+    )
+
+    handles, labels = ax_sp.get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles,
+            labels,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.02),
+            bbox_transform=fig.transFigure,
+            ncol=max(1, len(labels)),
+            frameon=False,
+            columnspacing=1.2,
+            handlelength=2.4,
+            handletextpad=0.6,
+        )
+
+    plt.tight_layout(rect=(0.0, 0.08, 1.0, 1.0))
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_path, bbox_inches="tight")
     print(f"\nPlot saved to: {out_path}")
     plt.show()
+
+
+def _write_table(
+    out_path: Path,
+    energy_grid: np.ndarray,
+    water_dedx: np.ndarray,
+    water_w: np.ndarray,
+    water_mfp_nm: np.ndarray,
+    ice_series: list[dict],
+) -> None:
+    lines = []
+    header = ["E_eV", "water_dedx_eV_per_nm", "water_W_eV", "water_IMFP_nm"]
+    for series in ice_series:
+        label = series.get("ice_type", series.get("label", "ice")).replace(" ", "_")
+        header.extend(
+            [
+                f"{label}_dedx_eV_per_nm",
+                f"{label}_W_eV",
+                f"{label}_IMFP_nm",
+            ]
+        )
+    lines.append("# " + " ".join(header))
+
+    for i, e in enumerate(energy_grid):
+        row = [
+            f"{e:.6e}",
+            f"{water_dedx[i]:.6e}",
+            f"{water_w[i]:.6e}",
+            f"{water_mfp_nm[i]:.6e}",
+        ]
+        for series in ice_series:
+            row.append(f"{series['dedx'][i]:.6e}")
+            row.append(f"{series['w_value'][i]:.6e}")
+            row.append(f"{series['inelastic_mfp_nm'][i]:.6e}")
+        lines.append(" ".join(row))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\nTable saved to: {out_path}")
 
 
 def main() -> None:
@@ -763,6 +1092,12 @@ def main() -> None:
         help="Output plot path.",
     )
     parser.add_argument(
+        "--out-txt",
+        type=Path,
+        default=OUTPUT_DIR / "stopping_power_w_imfp_water_vs_ice.txt",
+        help="Output text table path.",
+    )
+    parser.add_argument(
         "--ice-types",
         type=str,
         default="amorphous,hexagonal",
@@ -771,19 +1106,19 @@ def main() -> None:
     parser.add_argument(
         "--wvalue-water",
         type=str,
-        default="wvalue_water_10MeV",
+        default="wvalue_water.txt",
         help="Water W-value text file (name or path).",
     )
     parser.add_argument(
         "--wvalue-hex",
         type=str,
-        default="wvalue_hex_10MeV",
+        default="wvalue_ice_hex.txt",
         help="Hexagonal ice W-value text file (name or path).",
     )
     parser.add_argument(
         "--wvalue-am",
         type=str,
-        default="wvalue_am_10MeV",
+        default="wvalue_ice_am.txt",
         help="Amorphous ice W-value text file (name or path).",
     )
     parser.add_argument(
@@ -875,6 +1210,7 @@ def main() -> None:
     energy = np.logspace(np.log10(args.emin), np.log10(args.emax), args.nbins)
 
     exc_eloss_xs_water_low = _excitation_energy_loss_xs(energy, exc_path)
+    exc_sigma_xs_water_low = _excitation_sigma_xs(energy, exc_path)
     (
         ion_energy_water_low,
         ion_sigma_xs_water_low,
@@ -883,6 +1219,7 @@ def main() -> None:
 
     if born_available:
         exc_eloss_xs_born = _excitation_energy_loss_xs(energy, exc_born_path)
+        exc_sigma_xs_born = _excitation_sigma_xs(energy, exc_born_path)
         (
             ion_energy_born,
             ion_sigma_xs_born,
@@ -891,6 +1228,9 @@ def main() -> None:
 
         exc_eloss_xs_water = _merge_low_high_grid(
             energy, exc_eloss_xs_water_low, exc_eloss_xs_born, switch_e
+        )
+        exc_sigma_xs_water = _merge_low_high_grid(
+            energy, exc_sigma_xs_water_low, exc_sigma_xs_born, switch_e
         )
         ion_energy_water, ion_sigma_xs_water = _merge_low_high_tables(
             ion_energy_water_low,
@@ -912,6 +1252,7 @@ def main() -> None:
             )
     else:
         exc_eloss_xs_water = exc_eloss_xs_water_low
+        exc_sigma_xs_water = exc_sigma_xs_water_low
         ion_energy_water = ion_energy_water_low
         ion_sigma_xs_water = ion_sigma_xs_water_low
         ion_eloss_xs_water = ion_eloss_xs_water_low
@@ -942,11 +1283,57 @@ def main() -> None:
         ion_dedx=water_components["ion"],
         exc_dedx=water_exc_for_w,
     )
+    water_sigma_exc = exc_sigma_xs_water
+    water_sigma_ion = _interp_loglog(ion_energy_water, ion_sigma_xs_water, energy)
+    water_sigma_vib = _vib_sigma_xs(energy, water_vib) if use_water_custom else np.zeros_like(energy)
+    water_sigma_att = (
+        _attachment_sigma_xs(energy, water_attach, MELTON_SIGMA_SCALE_CM2)
+        if use_water_custom
+        else np.zeros_like(energy)
+    )
+    water_sigma_vib_att = water_sigma_vib + water_sigma_att
+    water_dom_sp = None
+    water_dom_w = None
+    water_dom_mfp = None
+    water_vib_att_dedx = water_components["vib"] + water_components["attach"]
+    water_dom_stack_sp = np.vstack(
+        [water_vib_att_dedx, water_components["exc"], water_components["ion"]]
+    )
+    water_dom_sp = np.full(energy.shape, -1, dtype=int)
+    water_sum_sp = np.nansum(water_dom_stack_sp, axis=0)
+    valid_dom = np.isfinite(water_sum_sp) & (water_sum_sp > 0)
+    if np.any(valid_dom):
+        water_dom_sp[valid_dom] = np.argmax(water_dom_stack_sp[:, valid_dom], axis=0)
+
+    water_dom_stack_w = np.vstack([water_vib_att_dedx * 0.0, water_components["exc"], water_components["ion"]])
+    water_dom_w = np.full(energy.shape, -1, dtype=int)
+    water_sum_w = np.nansum(water_dom_stack_w, axis=0)
+    valid_dom = np.isfinite(water_sum_w) & (water_sum_w > 0)
+    if np.any(valid_dom):
+        water_dom_w[valid_dom] = np.argmax(water_dom_stack_w[:, valid_dom], axis=0)
+
+    water_dom_stack_mfp = np.vstack([water_sigma_vib_att, water_sigma_exc, water_sigma_ion])
+    water_dom_mfp = np.full(energy.shape, -1, dtype=int)
+    water_sum_mfp = np.nansum(water_dom_stack_mfp, axis=0)
+    valid_dom = np.isfinite(water_sum_mfp) & (water_sum_mfp > 0)
+    if np.any(valid_dom):
+        water_dom_mfp[valid_dom] = np.argmax(water_dom_stack_mfp[:, valid_dom], axis=0)
+    water_sigma_ion = _interp_loglog(ion_energy_water, ion_sigma_xs_water, energy)
+    water_sigma_inel = water_sigma_ion + exc_sigma_xs_water
+    if use_water_custom:
+        water_sigma_inel += _vib_sigma_xs(energy, water_vib)
+        water_sigma_inel += _attachment_sigma_xs(energy, water_attach, MELTON_SIGMA_SCALE_CM2)
+    water_mfp_nm = np.full_like(energy, np.nan, dtype=float)
+    valid_sigma = water_sigma_inel > 0
+    water_mfp_nm[valid_sigma] = CM_PER_NM / (N_CM3_WATER * water_sigma_inel[valid_sigma])
 
     ice_series = []
+    plasma = plt.get_cmap("plasma", 4)
+    plasma_colors = plasma(np.linspace(0.0, 1.0, 4))
+    water_color = plasma_colors[0]
     ice_styles = {
-        "amorphous": {"color": "SlateGray", "ls": "-"},
-        "hexagonal": {"color": "0.55", "ls": "--"},
+        "amorphous": {"color": plasma_colors[1], "ls": "-"},
+        "hexagonal": {"color": plasma_colors[2], "ls": "--"},
     }
     for ice_type, ice_label, ice_exc_dcs_path, ice_ion_dcs_path in ice_info:
         phase_density = ICE_DENSITY_BY_TYPE.get(ice_type, ICE_HEXAGONAL_DENSITY_G_CM3)
@@ -954,10 +1341,14 @@ def main() -> None:
         n_cm3_ice = N_CM3_WATER * (ice_density / WATER_DENSITY_G_CM3)
 
         exc_energy_ice, exc_eloss_xs_ice_table = _dcs_energy_loss_xs_table(ice_exc_dcs_path)
+        exc_energy_sigma_ice, exc_sigma_xs_ice_table = _dcs_sigma_xs_table(ice_exc_dcs_path)
         ion_energy_ice, ion_sigma_xs_ice, ion_eloss_xs_ice = _ion_dcs_moments_table(
             ice_ion_dcs_path, EMFI_ION_BINDING_EEV
         )
         exc_eloss_xs_ice = _interp_loglog(exc_energy_ice, exc_eloss_xs_ice_table, energy)
+        exc_sigma_xs_ice = _interp_loglog(
+            exc_energy_sigma_ice, exc_sigma_xs_ice_table, energy
+        )
 
         ice_components = _compute_stopping_components(
             energy_grid=energy,
@@ -978,6 +1369,13 @@ def main() -> None:
             ion_dedx=ice_components["ion"],
             exc_dedx=ice_exc_for_w,
         )
+        ice_sigma_ion = _interp_loglog(ion_energy_ice, ion_sigma_xs_ice, energy)
+        ice_sigma_inel = ice_sigma_ion + exc_sigma_xs_ice
+        ice_sigma_inel += _vib_sigma_xs(energy, ice_vib)
+        ice_sigma_inel += _attachment_sigma_xs(energy, ice_attach, MICHAUD_SIGMA_SCALE_CM2)
+        ice_mfp_nm = np.full_like(energy, np.nan, dtype=float)
+        valid_sigma = ice_sigma_inel > 0
+        ice_mfp_nm[valid_sigma] = CM_PER_NM / (n_cm3_ice * ice_sigma_inel[valid_sigma])
 
         style = ice_styles.get(ice_type, {"color": "0.6", "ls": "-"})
         ice_series.append(
@@ -986,11 +1384,20 @@ def main() -> None:
                 "ice_type": ice_type,
                 "dedx": ice_components["total"],
                 "w_value": ice_w,
+                "exc_sigma": exc_sigma_xs_ice,
+                "ion_sigma": ice_sigma_ion,
+                "vib_sigma": _vib_sigma_xs(energy, ice_vib),
+                "attach_sigma": _attachment_sigma_xs(energy, ice_attach, MICHAUD_SIGMA_SCALE_CM2),
+                "vib_dedx": ice_components["vib"],
+                "exc_dedx": ice_components["exc"],
+                "ion_dedx": ice_components["ion"],
+                "attach_dedx": ice_components["attach"],
                 "ion_energy": ion_energy_ice,
                 "ion_sigma_xs": ion_sigma_xs_ice,
                 "dNion_dx": ice_dNion_dx,
                 "ion_dedx": ice_components["ion"],
                 "exc_dedx_for_w": ice_exc_for_w,
+                "inelastic_mfp_nm": ice_mfp_nm,
                 "color": style["color"],
                 "ls": style["ls"],
                 "emax": ice_max_by_type.get(ice_type),
@@ -1037,14 +1444,14 @@ def main() -> None:
             print(f"W-value file not found for {phase}: {source} (using computed curve).")
             continue
         try:
-            w_e, w_v = _load_wvalue_curve(resolved)
+            w_e, w_v, w_err = _load_wvalue_curve(resolved)
         except Exception as exc:
             print(f"Failed to load W-value file for {phase} ({resolved}): {exc}")
             continue
         if w_e.size == 0:
             print(f"W-value file for {phase} has no valid rows: {resolved}")
             continue
-        w_text_curves[phase] = {"energy": w_e, "w": w_v}
+        w_text_curves[phase] = {"energy": w_e, "w": w_v, "w_err": w_err}
         print(f"Using W-value text for {phase}: {resolved}")
 
     ice_w_emax_by_type = {}
@@ -1054,10 +1461,64 @@ def main() -> None:
             continue
         ice_w_emax_by_type[ice_type] = min(float(max_ice), WVALUE_MAX_ICE_EEV)
 
+    am_dom_sp = None
+    am_dom_w = None
+    am_dom_mfp = None
+    hex_dom_sp = None
+    hex_dom_w = None
+    hex_dom_mfp = None
+
+    def _dominance_from_series(series):
+        vib_att_dedx = series["vib_dedx"] + series["attach_dedx"]
+        exc_dedx = series["exc_dedx"]
+        ion_dedx = series["ion_dedx"]
+        stack_sp = np.vstack([vib_att_dedx, exc_dedx, ion_dedx])
+        dom_sp = np.full(energy.shape, -1, dtype=int)
+        sum_sp = np.nansum(stack_sp, axis=0)
+        valid = np.isfinite(sum_sp) & (sum_sp > 0)
+        if np.any(valid):
+            dom_sp[valid] = np.argmax(stack_sp[:, valid], axis=0)
+
+        stack_w = np.vstack([vib_att_dedx * 0.0, exc_dedx, ion_dedx])
+        dom_w = np.full(energy.shape, -1, dtype=int)
+        sum_w = np.nansum(stack_w, axis=0)
+        valid = np.isfinite(sum_w) & (sum_w > 0)
+        if np.any(valid):
+            dom_w[valid] = np.argmax(stack_w[:, valid], axis=0)
+
+        vib_att_sigma = series["vib_sigma"] + series["attach_sigma"]
+        exc_sigma = series["exc_sigma"]
+        ion_sigma = series["ion_sigma"]
+        stack_mfp = np.vstack([vib_att_sigma, exc_sigma, ion_sigma])
+        dom_mfp = np.full(energy.shape, -1, dtype=int)
+        sum_mfp = np.nansum(stack_mfp, axis=0)
+        valid = np.isfinite(sum_mfp) & (sum_mfp > 0)
+        if np.any(valid):
+            dom_mfp[valid] = np.argmax(stack_mfp[:, valid], axis=0)
+        return dom_sp, dom_w, dom_mfp
+
+    for series in ice_series:
+        ice_type = series.get("ice_type")
+        if ice_type == "amorphous":
+            am_dom_sp, am_dom_w, am_dom_mfp = _dominance_from_series(series)
+        elif ice_type == "hexagonal":
+            hex_dom_sp, hex_dom_w, hex_dom_mfp = _dominance_from_series(series)
+
     _plot(
         energy_grid=energy,
         water_dedx=water_dedx,
         water_w=water_w,
+        water_mfp_nm=water_mfp_nm,
+        water_color=water_color,
+        water_dom_sp=water_dom_sp,
+        water_dom_w=water_dom_w,
+        water_dom_mfp=water_dom_mfp,
+        am_dom_sp=am_dom_sp,
+        am_dom_w=am_dom_w,
+        am_dom_mfp=am_dom_mfp,
+        hex_dom_sp=hex_dom_sp,
+        hex_dom_w=hex_dom_w,
+        hex_dom_mfp=hex_dom_mfp,
         ice_series=ice_series,
         units=args.units,
         out_path=args.out,
@@ -1066,6 +1527,14 @@ def main() -> None:
         water_w_emax=water_w_plot_emax,
         ice_w_emax_by_type=ice_w_emax_by_type,
         w_text_curves=w_text_curves,
+    )
+    _write_table(
+        out_path=args.out_txt,
+        energy_grid=energy,
+        water_dedx=water_dedx,
+        water_w=water_w,
+        water_mfp_nm=water_mfp_nm,
+        ice_series=ice_series,
     )
 
 
