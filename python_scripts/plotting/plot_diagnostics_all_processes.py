@@ -34,7 +34,6 @@ import argparse
 import json
 import math
 import os
-import sys
 from pathlib import Path
 from typing import List
 import warnings
@@ -44,8 +43,7 @@ import matplotlib.pyplot as plt
 import uproot
 
 from root_utils import resolve_root_paths, resolve_first_root
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from physics_ice.constants import (
+from constants import (
     CROSS_SECTIONS_DIR,
     CUSTOM_DATA_ROOT_GEANT4,
     EMFI_EXCITATION_EEV,
@@ -80,6 +78,17 @@ FONTSIZE = FONTSIZE_16
 plt.rcParams.update(rcparams_with_fontsize(RC_BASE_STANDARD, FONTSIZE))
 
 # Emfietzoglou tables use a model scale factor in Geant4 DNA.
+
+def _vlag_colors(n: int) -> list:
+    try:
+        cmap = plt.get_cmap("vlag")
+    except ValueError:
+        try:
+            import seaborn as sns
+            cmap = sns.color_palette("vlag", as_cmap=True)
+        except Exception:
+            cmap = plt.get_cmap("coolwarm")
+    return [cmap(x) for x in np.linspace(0.0, 1.0, n)]
 # Convert raw table values to cm^2, then apply the same plot scaling as sim.
 EMFI_REF_TO_CM2 = (1e-22 / 3.343) * 1e4
 
@@ -1997,13 +2006,14 @@ def plot_summary_stream(acc: dict, out_path: str, fontsize: float):
     if proc_counts:
         uniq = np.array(sorted(proc_counts.keys()), dtype=float)
         counts = np.array([proc_counts[k] for k in uniq], dtype=float)
+        vlag = _vlag_colors(6)
         ax1.bar(uniq, counts, width=0.9, color="#dddddd", edgecolor="none", label="All")
         cats = {
             "Excitation": [12,15,22,32,42,52,62],
             "Elastic": [11,21,31,41,51,61,110,210,410,510,710,120,220,420,520,720],
             "Ionisation": [13,23,33,43,53,63,73,130,230,430,530,730],
         }
-        colors = {"Excitation": "#2ca02c", "Elastic": "#1f77b4", "Ionisation": "#d62728"}
+        colors = {"Excitation": vlag[1], "Elastic": vlag[3], "Ionisation": vlag[5]}
         for name, ids in cats.items():
             mask = np.isin(uniq, ids)
             ax1.bar(uniq[mask], counts[mask], width=0.9, color=colors[name], alpha=0.7, label=name)
@@ -2020,7 +2030,15 @@ def plot_summary_stream(acc: dict, out_path: str, fontsize: float):
     # Panel 3: position histogram along x by process types
     ax3 = axs[2]
     centers = 0.5 * (summary["x_bins"][1:] + summary["x_bins"][:-1])
-    proc_sets = {10:("Solv",'#9467bd'),11:("Elastic",'#d62728'),12:("Excit",'#2ca02c'),13:("Ionis",'#1f77b4'),14:("Attach",'#8c564b'),15:("Vib",'#e377c2')}
+    vlag = _vlag_colors(6)
+    proc_sets = {
+        10: ("Solv", vlag[0]),
+        11: ("Elastic", vlag[1]),
+        12: ("Excit", vlag[2]),
+        13: ("Ionis", vlag[3]),
+        14: ("Attach", vlag[4]),
+        15: ("Vib", vlag[5]),
+    }
     for pid, (lab, col) in proc_sets.items():
         h = summary["x_hist_by_proc"].get(pid)
         if h is None:
@@ -2031,7 +2049,14 @@ def plot_summary_stream(acc: dict, out_path: str, fontsize: float):
     # Panel 4: kinetic energy histogram for electrons
     ax4 = axs[3]
     k_centers = 0.5 * (summary["k_bins"][1:] + summary["k_bins"][:-1])
-    ax4.hist(k_centers, bins=summary["k_bins"], weights=summary["k_hist"], histtype="stepfilled", alpha=0.7, color="#d62728")
+    ax4.hist(
+        k_centers,
+        bins=summary["k_bins"],
+        weights=summary["k_hist"],
+        histtype="stepfilled",
+        alpha=0.7,
+        color=_vlag_colors(6)[4],
+    )
     ax4.set_yscale("log"); ax4.set_xlabel("Kinetic Energy (eV)"); ax4.set_ylabel("Counts")
 
     outpath = _resolve_output(out_path)
@@ -2459,7 +2484,7 @@ def plot_deflection_angles_all(arrs, out_path: str, fontsize: float = FONTSIZE):
 # -------- CLI --------
 def main():
     ap = argparse.ArgumentParser(description="Plot cross-sections, deflection angles, and summaries from dna.root and optional reference .dat")
-    ap.add_argument("--root", default="build/europa_test_e2.root", help="Path to ROOT file (default: build/dna.root)")
+    ap.add_argument("--root", default="build/europa_test_e1_100_MeV.root", help="Path to ROOT file (default: build/dna.root)")
     ap.add_argument("--process", type=int, default=15, help="Single process code to plot when --processes is not given (default: 15)")
     ap.add_argument("--processes", default=None, help="Comma-separated process codes or 'all' to iterate over all present in ROOT")
     ap.add_argument("--dat", default=None, help="Absolute path to a reference .dat file (energy + partial XS columns). Overrides auto lookup")

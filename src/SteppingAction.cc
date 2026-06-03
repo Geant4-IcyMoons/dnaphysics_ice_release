@@ -145,8 +145,10 @@ void SteppingAction::SetHighEnergyFallbackActive(const G4Track* track)
   if (!track) return;
   if (track->GetDefinition() != G4Electron::ElectronDefinition()) return;
   constexpr G4double kHighMin = 10. * MeV;
-  const bool enable = (track->GetKineticEnergy() >= kHighMin);
-  const int state = enable ? 1 : 0;
+  constexpr G4double kBremMin = 1. * MeV;
+  const bool enableHigh = (track->GetKineticEnergy() >= kHighMin);
+  const bool enableBrem = (track->GetKineticEnergy() >= kBremMin);
+  const int state = (enableHigh ? 1 : 0) | (enableBrem ? 2 : 0);
   if (state == g_fallbackLastState) return;
   g_fallbackLastState = state;
 
@@ -159,9 +161,11 @@ void SteppingAction::SetHighEnergyFallbackActive(const G4Track* track)
     auto* proc = (*plist)[i];
     if (!proc) continue;
     const auto& name = proc->GetProcessName();
-    if (name == "msc" || name == "eIoni" || name == "eBrem" ||
+    if (name == "eBrem") {
+      pm->SetProcessActivation(proc, enableBrem);
+    } else if (name == "msc" || name == "eIoni" ||
         name == "CoulombScat" || name == "CoulombScattering") {
-      pm->SetProcessActivation(proc, enable);
+      pm->SetProcessActivation(proc, enableHigh);
     }
   }
 }
