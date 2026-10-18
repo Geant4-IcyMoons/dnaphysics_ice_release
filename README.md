@@ -1,5 +1,10 @@
 # Geant4-IcyMoons
 
+The Python dielectric generator has a
+[threshold/KK consistency repair](python_scripts/physics_ice/CONSISTENCY.md).
+The bundled electron DATs still belong to the preceding release model;
+new transport tables require regeneration and renewed physical benchmarks.
+
 <p align="center">
   <img src="icymoons_logo.png" alt="Geant4-IcyMoons logo" />
 </p>

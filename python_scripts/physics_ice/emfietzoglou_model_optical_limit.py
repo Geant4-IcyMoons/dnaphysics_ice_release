@@ -1,4 +1,4 @@
-"""
+r"""
 Dielectric model for water ice (amorphous, hexagonal) with q-dispersion.
 
 What this implements
@@ -12,21 +12,17 @@ Units
 - q in a0^{-1}
 """
 
-from dataclasses import dataclass
-from typing import List, Literal, Union
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 
 from constants import (
-    EH,
     FONT_COURIER,
     FONTSIZE_18,
     HFONT_COURIER,
     ICE_DATA_XLSX_PATH,
     RC_BASE_STANDARD,
-    RY,
     rcparams_with_fontsize,
 )
 
@@ -39,545 +35,28 @@ plt.rcParams['mathtext.fontset'] = 'custom'
 FONTSIZE = FONTSIZE_18
 plt.rcParams.update(rcparams_with_fontsize(RC_BASE_STANDARD, FONTSIZE))
 
-Material = Literal["amorphous", "hexagonal"]
-ArrayLike = Union[float, np.ndarray]
 
-# ---- data containers ----
-@dataclass(frozen=True)
-class Osc:
-    E0: float       # resonance energy (eV)
-    gamma: float    # damping width (eV)
-    f: float        # oscillator strength (dimensionless)
-    kind: Literal["ionization", "excitation", "k_shell"]
-    Bth: float = 0.0  # threshold (eV), used for ionization and K-shell channels
-
-
-@dataclass(frozen=True)
-class IceOpticalSet:
-    Ep: float
-    Bmin: float
-    excitations: List[Osc]   # 5 derivative-Drude terms
-    ionizations: List[Osc]   # 4 Drude terms with thresholds
-    kshell: Osc              # optional Drude (kept optical)
-
-
-@dataclass(frozen=True)
-class DispersionCoeffs:
-    """
-    Per-excitation dispersion (length 5 each, ordered as in the excitations list):
-        a_fj, b_fj, c_fj  -> f_j(q) = f_j*exp(-a_j q^2) + b_j q^2 exp(-c_j q^2)
-    Global ionization dispersion:
-        c_disp, d_disp    -> E_i(q) = E_i + [1 - exp(-c_disp * q**d_disp)] * RY * q^2
-        b1, b2            -> gamma(q) = gamma_0 + b1*(RY*q) + b2*(RY*q)**2
-
-    Notes:
-    - q is in a0^{-1}. RY is used to express the kinematic q^2 term in eV.
-    - If scalars are provided for a_fj, b_fj, c_fj they will be broadcast to length 5.
-    """
-    a_fj: ArrayLike   # scalar or len 5
-    b_fj: ArrayLike   # scalar or len 5
-    c_fj: ArrayLike   # scalar or len 5
-    c_disp: float = 1.5   # RR2017 default
-    d_disp: float = 0.4   # RR2017 default
-    b1: float = 0.735     # RR2017 default
-    b2: float = 0.441     # RR2017 default
-
-
-# ---- Drude kernels (optical) ----
-def _drude_e2(E: np.ndarray, f: float, E0: float, gamma: float) -> np.ndarray:
-    num = f * gamma * E
-    den = (E0**2 - E**2)**2 + (gamma * E)**2
-    return num / den
-
-
-def _drude_e1(E: np.ndarray, f: float, E0: float, gamma: float) -> np.ndarray:
-    num = f * (E0**2 - E**2)
-    den = (E0**2 - E**2)**2 + (gamma * E)**2
-    return num / den
-
-
-def _d_drude_e2(E: np.ndarray, f: float, E0: float, gamma: float) -> np.ndarray:
-    num = 2.0 * f * (gamma**3) * (E**3)
-    den = ((E0**2 - E**2)**2 + (gamma * E)**2)**2
-    return num / den
-
-
-def _d_drude_e1(E: np.ndarray, f: float, E0: float, gamma: float) -> np.ndarray:
-    base = (E0**2 - E**2)
-    den1 = (E0**2 - E**2)**2 + (gamma * E)**2
-    num = f * base * ((E0**2 - E**2)**2 + 3.0 * (gamma * E)**2)
-    den = den1**2
-    return num / den
-
-
-# ---- q=0 material parameters ----
-def epsilon_optical(material: Material) -> IceOpticalSet:
-    if material == "amorphous":
-        Ep = 20.82
-        Bmin = 7.0
-        excit = [
-            Osc(8.65,  1.6, 0.0090, "excitation"),
-            Osc(10.50, 2.5, 0.0096, "excitation"),
-            Osc(12.60, 3.5, 0.0210, "excitation"),
-            Osc(14.10, 3.0, 0.0040, "excitation"),
-            Osc(14.50, 2.5, 0.0030, "excitation"),
-        ]
-        ioniz = [
-            Osc(15.40, 5.7, 0.1250, "ionization", Bth=10.0),
-            Osc(18.60, 7.1, 0.1300, "ionization", Bth=13.0),
-            Osc(24.50, 15.0, 0.1100, "ionization", Bth=17.0),
-            Osc(38.00, 30.0, 0.4110, "ionization", Bth=32.2),
-        ]
-        kshell = Osc(450.0, 360.0, 0.3143, "k_shell", Bth=540.0)
-    elif material == "hexagonal":
-        Ep = 20.59
-        Bmin = 7.0
-        excit = [
-            Osc(8.65,  1.6, 0.0168, "excitation"),
-            Osc(10.50, 1.5, 0.0065, "excitation"),
-            Osc(12.60, 3.0, 0.0190, "excitation"),
-            Osc(14.10, 2.7, 0.0110, "excitation"),
-            Osc(14.50, 1.5, 0.0044, "excitation"),
-        ]
-        ioniz = [
-            Osc(15.80, 4.6, 0.1000, "ionization", Bth=10.0),
-            Osc(18.00, 7.5, 0.2000, "ionization", Bth=13.0),
-            Osc(24.50, 14.0, 0.1100, "ionization", Bth=17.0),
-            Osc(35.00, 30.0, 0.3580, "ionization", Bth=32.2),
-        ]
-        kshell = Osc(450.0, 360.0, 0.3143, "k_shell", Bth=540.0)
-    else:
-        raise ValueError("material must be 'amorphous' or 'hexagonal'")
-
-    return IceOpticalSet(Ep=Ep, Bmin=Bmin, excitations=excit, ionizations=ioniz, kshell=kshell)
-
-# ===== Partitioning / truncation algorithm (Kyriakou et al., MedPhys 2015, Appendix) =====
-
-def _Theta(x):
-    # Θ(0)=1 per Appendix
-    x = np.asarray(x)
-    out = np.ones_like(x)
-    out[x < 0] = 0.0
-    return out
-
-def _H(x):
-    # H(0)=0 per Appendix
-    x = np.asarray(x)
-    out = np.zeros_like(x)
-    out[x > 0] = 1.0
-    return out
-
-def _safe_div(num, den):
-    eps = 1e-300
-    return num / np.where(np.abs(den) < eps, np.sign(den) * eps + eps, den)
-
-# def _apply_partitioning_optical(E, exc_arrays, exc_Ek, ion_arrays, ion_B, Bmin):
-#     """
-#     Parameters
-#     ----------
-#     E : (N,) energy grid (ascending)
-#     exc_arrays : list of (N,) arrays, Im[ε_k(E)] for excitations
-#     exc_Ek : list of Ek (use oscillator E0 for each excitation)
-#     ion_arrays : list of (N,) arrays, Im[ε_n(E)] for ionizations
-#     ion_B : list of Bn thresholds for ionizations
-#     Bmin : float, minimum valence onset (for gating excitations)
-#
-#     Returns
-#     -------
-#     exc_mod, ion_mod : lists of arrays after partitioning
-#     """
-#     E = np.asarray(E, float)
-#     nE = E.size
-#
-#     IonIm = np.stack(ion_arrays, axis=0) if ion_arrays else np.zeros((0, nE))
-#     IonB  = np.array(list(ion_B), dtype=float) if ion_arrays else np.zeros((0,))
-#
-#     ExcIm = np.stack(exc_arrays, axis=0) if exc_arrays else np.zeros((0, nE))
-#     ExcEk = np.array(list(exc_Ek), dtype=float) if exc_arrays else np.zeros((0,))
-#
-#     n_ion = IonIm.shape[0]
-#     n_exc = ExcIm.shape[0]
-#
-#     # Sort ion shells by ascending B
-#     if n_ion > 0:
-#         order = np.argsort(IonB)
-#         IonIm = IonIm[order]
-#         IonB  = IonB[order]
-#
-#     B1 = IonB[0] if n_ion > 0 else np.inf
-#
-#     # ---- Ionizations (A1)-(A5) ----
-#     IonIm_mod = np.zeros_like(IonIm)
-#     for n in range(n_ion):
-#         Im_n = IonIm[n]
-#         Bn   = IonB[n]
-#
-#         Cn = _H(E - Bn)
-#
-#         Im_n_Bn = np.interp(Bn, E, Im_n)
-#         Sn = - Im_n_Bn * np.exp(Bn - E)
-#
-#         C_greater = np.zeros_like(E)
-#         S_greater = np.zeros_like(E)
-#
-#         for j in range(n+1, n_ion):
-#             Im_j = IonIm[j]; Bj = IonB[j]
-#             den = np.zeros_like(E)
-#             for i in range(0, j):
-#                 den += IonIm[i] * _H(E - IonB[i])
-#
-#             C_term = Im_j * _Theta(Bj - E) * _safe_div(Im_n, den)
-#             Im_j_Bj = np.interp(Bj, E, Im_j)
-#             S_term = Im_j_Bj * np.exp(Bj - E) * _H(E - Bj) * _safe_div(Im_n, den)
-#
-#             C_greater += C_term
-#             S_greater += S_term
-#
-#         IonIm_mod[n] = (Im_n + Sn + S_greater + C_greater) * Cn
-#
-#     # ---- Excitations (A6)-(A9) ----
-#     ExcIm_mod = np.zeros_like(ExcIm)
-#
-#     B_gate_exc = Bmin
-#
-#     if n_exc > 0:
-#         Theta_B_gate_minus_Ek = np.array([1.0 if (B_gate_exc - Ek) >= 0 else 0.0 for Ek in ExcEk], float) if np.isfinite(B_gate_exc) else np.zeros((n_exc,), float)
-#         Exc_den_Cn = np.sum(ExcIm * Theta_B_gate_minus_Ek[:, None], axis=0) if n_exc > 0 else np.zeros_like(E)
-#         Exc_den_Sn1 = np.sum(ExcIm, axis=0)
-#
-#         Im_n1_B_gate = np.interp(B_gate_exc, E, IonIm[0]) if n_ion > 0 else 0.0
-#
-#         Ion_sum = np.sum(IonIm, axis=0) if n_ion > 0 else np.zeros_like(E)
-#
-#         for k in range(n_exc):
-#             Im_k = ExcIm[k]; Ek = ExcEk[k]
-#
-#             # Gate excitations with Bmin instead of B1 so features below the first
-#             # ionization threshold (down to Bmin) are retained after partitioning.
-#             Ck = _Theta(E - B_gate_exc) if np.isfinite(B_gate_exc) else np.ones_like(E)
-#
-#             Sn1_weight = _safe_div(Im_k, Exc_den_Sn1) if n_exc > 0 else np.zeros_like(E)
-#             Sn1 = Im_n1_B_gate * np.exp(B_gate_exc - E) * _H(E - B_gate_exc) * Sn1_weight if np.isfinite(B_gate_exc) else np.zeros_like(E)
-#
-#             top_weight = Im_k * (1.0 if (B_gate_exc - Ek) >= 0 else 0.0)
-#             weight = _safe_div(top_weight, Exc_den_Cn) if n_exc > 0 else np.zeros_like(E)
-#             Cn_term = Ion_sum * _Theta(B_gate_exc - E) * weight if np.isfinite(B_gate_exc) else np.zeros_like(E)
-#
-#             ExcIm_mod[k] = (Im_k + Sn1 + Cn_term) * Ck
-#
-#     # Convert back to lists in original ion order
-#     exc_mod_list = [ExcIm_mod[i] if n_exc>0 else np.zeros_like(E) for i in range(n_exc)]
-#     ion_mod_list = [IonIm_mod[i] if n_ion>0 else np.zeros_like(E) for i in range(n_ion)]
-#
-#     # Conservation check (pointwise)
-#     orig = (np.sum(IonIm, axis=0) if n_ion>0 else 0.0) + (np.sum(ExcIm, axis=0) if n_exc>0 else 0.0)
-#     mod  = (np.sum(IonIm_mod, axis=0) if n_ion>0 else 0.0) + (np.sum(ExcIm_mod, axis=0) if n_exc>0 else 0.0)
-#     if not np.allclose(orig, mod, rtol=1e-10, atol=1e-10):
-#         # Don't crash production runs; warn via print
-#         _max_abs = float(np.max(np.abs(orig - mod)))
-#         print(f"[partition] WARNING: conservation drift max_abs={_max_abs:.3e}")
-#
-#     return exc_mod_list, ion_mod_list
-
-def _apply_partitioning_optical(E, exc_arrays, exc_Ek, ion_arrays, ion_B, Bmin):
-    """
-    Parameters
-    ----------
-    E : (N,) energy grid (ascending)
-    exc_arrays : list of (N,) arrays, Im[ε_k(E)] for excitations
-    exc_Ek : list of Ek (oscillator energies for each excitation)
-    ion_arrays : list of (N,) arrays, Im[ε_n(E)] for ionizations
-    ion_B : list of Bn thresholds for ionizations
-    Bmin : float, minimum valence onset (used as B_gap for gating excitations)
-
-    Returns
-    -------
-    exc_mod, ion_mod : lists of arrays after partitioning
-    """
-    E = np.asarray(E, float)
-    nE = E.size
-
-    # Stack inputs
-    IonIm = np.stack(ion_arrays, axis=0) if ion_arrays else np.zeros((0, nE))
-    IonB  = np.array(list(ion_B), dtype=float) if ion_arrays else np.zeros((0,))
-
-    ExcIm = np.stack(exc_arrays, axis=0) if exc_arrays else np.zeros((0, nE))
-    ExcEk = np.array(list(exc_Ek), dtype=float) if exc_arrays else np.zeros((0,))
-
-    n_ion = IonIm.shape[0]
-    n_exc = ExcIm.shape[0]
-
-    # Sort ion shells by ascending B
-    if n_ion > 0:
-        order = np.argsort(IonB)
-        IonIm = IonIm[order]
-        IonB  = IonB[order]
-
-    B1 = IonB[0] if n_ion > 0 else np.inf   # minimum binding energy
-
-    # ------------------------------------------------------------------
-    # Ionizations: Eqs. (A1)–(A5) Kyriakou et al.
-    # ------------------------------------------------------------------
-    IonIm_mod = np.zeros_like(IonIm)
-
-    for n in range(n_ion):
-        Im_n = IonIm[n]
-        Bn   = IonB[n]
-
-        # Cn = H(E - Bn)
-        Cn = _H(E - Bn)
-
-        # Sn = - Im_n(Bn) * exp(Bn - E)
-        Im_n_Bn = np.interp(Bn, E, Im_n, left=0.0, right=0.0)
-        Sn = - Im_n_Bn * np.exp(Bn - E)
-
-        C_greater = np.zeros_like(E)
-        S_greater = np.zeros_like(E)
-
-        for j in range(n + 1, n_ion):
-            Im_j = IonIm[j]
-            Bj   = IonB[j]
-
-            # denominator: sum_{i=1..j-1} Im_i(E) H(E - Bi)
-            den = np.zeros_like(E)
-            for i in range(0, j):
-                den += IonIm[i] * _H(E - IonB[i])
-
-            # C>n term: Im_j(E) Θ(Bj - E) * Im_n(E) / den
-            C_term = Im_j * _Theta(Bj - E) * _safe_div(Im_n, den)
-
-            # S>n term: Im_j(Bj) exp(Bj - E) H(E - Bj) * Im_n(E) / den
-            Im_j_Bj = np.interp(Bj, E, Im_j, left=0.0, right=0.0)
-            S_term  = Im_j_Bj * np.exp(Bj - E) * _H(E - Bj) * _safe_div(Im_n, den)
-
-            C_greater += C_term
-            S_greater += S_term
-
-        IonIm_mod[n] = (Im_n + Sn + S_greater + C_greater) * Cn
-
-    # ------------------------------------------------------------------
-    # Excitations: Eqs. (A6)–(A9) Kyriakou et al.
-    # Here Bmin is used as B_gap in Ck, while B1 is used in Sn=1 and Cn.
-    # ------------------------------------------------------------------
-    ExcIm_mod = np.zeros_like(ExcIm)
-    B_gap = Bmin
-
-    if n_exc > 0:
-        # Denominator for Cn: sum_j Im_j(E) Θ(B1 - Ej)
-        if np.isfinite(B1):
-            Theta_B1_minus_Ek = np.array(
-                [1.0 if (B1 - Ek) >= 0.0 else 0.0 for Ek in ExcEk],
-                float
-            )
-        else:
-            Theta_B1_minus_Ek = np.zeros((n_exc,), float)
-
-        Exc_den_Cn = np.sum(ExcIm * Theta_B1_minus_Ek[:, None], axis=0) if n_exc > 0 else np.zeros_like(E)
-
-        # Denominator for Sn=1: sum_j Im_j(E)
-        Exc_den_Sn1 = np.sum(ExcIm, axis=0)
-
-        # Ionization contributions
-        if n_ion > 0 and np.isfinite(B1):
-            # Im_{n=1}(B1)
-            Im_n1_B1 = np.interp(B1, E, IonIm[0], left=0.0, right=0.0)
-        else:
-            Im_n1_B1 = 0.0
-
-        if n_ion > 0:
-            Ion_sum = np.sum(IonIm, axis=0)
-        else:
-            Ion_sum = np.zeros_like(E)
-
-        # Θ(B1 - E), used in Cn term
-        Theta_B1_minus_E = _Theta(B1 - E) if np.isfinite(B1) else np.zeros_like(E)
-
-        for k in range(n_exc):
-            Im_k = ExcIm[k]
-            Ek   = ExcEk[k]
-
-            # Ck = Θ(E - B_gap), excitation gate
-            if np.isfinite(B_gap):
-                Ck = _Theta(E - B_gap)
-            else:
-                Ck = np.ones_like(E)
-
-            # Sn=1 term: Im_{n=1}(B1) exp(B1 - E) H(E - B1) * Im_k(E) / sum_j Im_j(E)
-            if n_ion > 0 and np.isfinite(B1):
-                Sn1_weight = _safe_div(Im_k, Exc_den_Sn1)
-                Sn1 = Im_n1_B1 * np.exp(B1 - E) * _H(E - B1) * Sn1_weight
-            else:
-                Sn1 = np.zeros_like(E)
-
-            # Cn term: redistribution of ionization strength below B1 to excitations with Ek <= B1
-            if np.isfinite(B1) and n_ion > 0:
-                top_weight_k = Im_k * (1.0 if (B1 - Ek) >= 0.0 else 0.0)
-                weight_k     = _safe_div(top_weight_k, Exc_den_Cn)
-                Cn_term      = Ion_sum * Theta_B1_minus_E * weight_k
-            else:
-                Cn_term = np.zeros_like(E)
-
-            # Im_k(mod)(E) = {Im_k + Sn1 + Cn} * Ck
-            ExcIm_mod[k] = (Im_k + Sn1 + Cn_term) * Ck
-
-    # ------------------------------------------------------------------
-    # Convert back to lists in original ion order
-    # ------------------------------------------------------------------
-    exc_mod_list = [ExcIm_mod[i] if n_exc > 0 else np.zeros_like(E) for i in range(n_exc)]
-    ion_mod_list = [IonIm_mod[i] if n_ion > 0 else np.zeros_like(E) for i in range(n_ion)]
-
-    # Conservation check (pointwise)
-    orig = (np.sum(IonIm, axis=0) if n_ion > 0 else 0.0) + (np.sum(ExcIm, axis=0) if n_exc > 0 else 0.0)
-    mod  = (np.sum(IonIm_mod, axis=0) if n_ion > 0 else 0.0) + (np.sum(ExcIm_mod, axis=0) if n_exc > 0 else 0.0)
-
-    if not np.allclose(orig, mod, rtol=1e-10, atol=1e-10):
-        max_abs = float(np.max(np.abs(orig - mod)))
-        print(f"[partition] WARNING: conservation drift max_abs={max_abs:.3e}")
-
-    return exc_mod_list, ion_mod_list
-
-# =====================================================================
-# q = 0: VALENCE-ONLY ε2, ε1, and separate K-shell ε2
-# =====================================================================
-
-def epsilon2_valence_E0(E: np.ndarray, s: IceOpticalSet, partitioned: bool = False) -> dict:
-    """
-    Imaginary dielectric, optical limit (q=0), valence only.
-    Returns a dict with per-channel arrays and the total:
-      {
-        "excitations": [array(...), ...],
-        "ionizations": [array(...), ...],
-        "total": array(...)
-      }
-    If partitioned=True, applies the Kyriakou et al. (2015) redistribution algorithm.
-    """
-    E = np.asarray(E, float)
-
-    if partitioned:
-        # 1. Generate raw, ungated arrays for the partitioning algorithm
-        # Excitations use derivative Drude (_d_drude_e2)
-        exc_arrays = [(s.Ep**2) * _d_drude_e2(E, o.f, o.E0, o.gamma) for o in s.excitations]
-        exc_Ek = [o.E0 for o in s.excitations]
-
-        # Ionizations use normal Drude (_drude_e2) - NO threshold gating here
-        ion_arrays = [(s.Ep**2) * _drude_e2(E, o.f, o.E0, o.gamma) for o in s.ionizations]
-        ion_B = [o.Bth for o in s.ionizations]
-
-        # 2. Apply the algorithm
-        exc_mod, ion_mod = _apply_partitioning_optical(E, exc_arrays, exc_Ek, ion_arrays, ion_B, s.Bmin)
-
-        # 3. Sum up
-        total = np.zeros_like(E)
-        for y in exc_mod:
-            total += y
-        for y in ion_mod:
-            total += y
-
-        return {"excitations": exc_mod, "ionizations": ion_mod, "total": total}
-
-    else:
-        # Original Logic: Gating (optical): excitations above Bmin; ionizations above individual Bth
-        g_exc = (E >= s.Bmin).astype(float)
-
-        exc = [(s.Ep**2) * g_exc * _d_drude_e2(E, o.f, o.E0, o.gamma) for o in s.excitations]
-        ion = []
-        for o in s.ionizations:
-            g = (E >= o.Bth).astype(float)
-            ion.append((s.Ep**2) * g * _drude_e2(E, o.f, o.E0, o.gamma))
-
-        total = np.zeros_like(E)
-        for y in exc:
-            total += y
-        for y in ion:
-            total += y
-
-        return {"excitations": exc, "ionizations": ion, "total": total}
-
-def epsilon1_valence_E0(E: np.ndarray, s: IceOpticalSet) -> dict:
-    """
-    Real dielectric, optical limit (q=0), valence only.
-    No threshold gating. Baseline +1 is included only in 'total'.
-    Returns:
-      {
-        "excitations": [array(...), ...],
-        "ionizations": [array(...), ...],
-        "total": array(...)
-      }
-    Note: The partitioning algorithm conserves the total Im[eps], so the total Re[eps]
-    calculated here using the original Drude forms remains valid for the total.
-    """
-    E = np.asarray(E, float)
-
-    exc = [(s.Ep**2) * _d_drude_e1(E, o.f, o.E0, o.gamma) for o in s.excitations]
-    ion = [(s.Ep**2) * _drude_e1(E, o.f, o.E0, o.gamma) for o in s.ionizations]
-
-    total = np.ones_like(E)
-    for y in exc:
-        total += y
-    for y in ion:
-        total += y
-
-    return {"excitations": exc, "ionizations": ion, "total": total}
-
-def epsilon2_Kshell_E0(E: np.ndarray, s: IceOpticalSet) -> np.ndarray:
-    E = np.asarray(E, float)
-    o = s.kshell
-    y = (s.Ep**2) * _drude_e2(E, o.f, o.E0, o.gamma)
-    return np.where(E >= o.Bth, y, 0.0)
-
-def epsilon2_Kshell_E0_fsum_corrected(E, s):
-    r"""
-    Oxygen K-shell ε2^(K)(E, q=0) normalized by the f-sum so that
-        ∫_0^∞ E * ε2^(K)(E) dE = (π/2) * Ep^2 * N_K,   with N_K = 0.178.
-    This enforces Neff^(K) = 0.178 and makes Neff_total → 1, Neff_valence → 0.822.
-
-    Uses a single (normal) Drude shape with onset at the O K edge.
-    Requires in 's.kshell' at least: E0, gamma, Bth. Uses s.Ep for Ep.
-    """
-    import numpy as np
-
-    E   = np.asarray(E, dtype=float)
-    Ep  = float(s.Ep)
-    ks  = getattr(s, "kshell", None)
-    if ks is None:
-        # No K-shell parameters present
-        return np.zeros_like(E)
-
-    E0   = float(getattr(ks, "E0",   450.0))
-    gamma= float(getattr(ks, "gamma",360.0))
-    Bth  = float(getattr(ks, "Bth",  540.0))
-    N_K  = 0.1788  # Emfietzoglou et al., fixed atomic fraction
-
-    # Unit-amplitude Drude *shape* for ε2:
-    # ε2_shape(E) = (γ E) / [(E0^2 - E^2)^2 + (γ E)^2], zeroed below the edge
-    num   = gamma * E
-    den   = (E0*E0 - E*E)**2 + (gamma * E)**2
-    shape = np.where(E >= Bth, np.where(den > 0.0, num / den, 0.0), 0.0)
-
-    # Target area for ∫ E * ε2^(K)(E) dE
-    target = 0.5 * np.pi * (Ep**2) * N_K
-
-    # Cumulative trapezoid to avoid warnings; last value is the area
-    dE     = np.diff(E)
-    midE   = 0.5 * (E[1:] + E[:-1])
-    area_shape = np.sum(0.5 * (shape[1:] + shape[:-1]) * dE * midE)
-    A = target / area_shape if np.isfinite(area_shape) and area_shape > 0.0 else 0.0
-
-    return A * shape
-
-def elf_E0(E: np.ndarray, s: IceOpticalSet, include_kshell: bool = True, partitioned: bool = False) -> np.ndarray:
-    """ELF at q=0 using valence ε plus optional additive K-shell ε2."""
-    E = np.asarray(E, float)
-    e1v = epsilon1_valence_E0(E, s)  # dict
-    e2v = epsilon2_valence_E0(E, s, partitioned=partitioned)  # dict
-    e1t, e2t = e1v["total"], e2v["total"]
-    denom = e1t**2 + e2t**2
-    denom = np.where(denom == 0.0, np.finfo(float).tiny, denom)
-    elf_val = e2t / denom
-    if include_kshell:
-        # elf_val = elf_val + epsilon2_Kshell_E0(E, s)
-        elf_val = elf_val + epsilon2_Kshell_E0_fsum_corrected(E, s)
-    return elf_val
+import emfietzoglou_model_finite_q as finite_q
+Osc, IceOpticalSet = finite_q.Osc, finite_q.IceOpticalSet
+DispersionCoeffs = finite_q.DispersionCoeffs
+epsilon_optical = finite_q.epsilon_optical
+epsilon1_valence_E0 = finite_q.epsilon1_valence_E0
+epsilon2_Kshell_E0 = finite_q.epsilon2_Kshell_E0
+
+
+def epsilon2_valence_E0(E, s, partitioned=True):
+    """Use the production response; do not maintain a separate optical fit."""
+    result = finite_q.epsilon2_valence_Eq(np.atleast_1d(E), 0., s,
+        DispersionCoeffs(0., 0., 0.), partitioned=partitioned)
+    return {k: ([a[0] for a in v] if isinstance(v, list) else v[0])
+            for k, v in result.items()}
+
+
+def elf_E0(E, s, include_kshell=True, partitioned=True):
+    real = epsilon1_valence_E0(E, s)["total"]
+    imag = epsilon2_valence_E0(E, s, partitioned)["total"]
+    valence = imag/(real*real + imag*imag)
+    return valence + (epsilon2_Kshell_E0(E, s) if include_kshell else 0.)
 
 def plot_Im_epsilon_channel_resolved(
     E: np.ndarray,
@@ -786,7 +265,7 @@ def plot_neff_and_I(E_min=0.1, E_max=1.0e6, npts=50000, savepath=None, partition
         elf_val = elf_E0(E, s, include_kshell=False, partitioned=partitioned)
 
         # K-shell ε2 added directly to Im[1/ε] per Eq. (7)
-        e2k = epsilon2_Kshell_E0_fsum_corrected(E, s)
+        e2k = epsilon2_Kshell_E0(E, s)
 
         # Total optical ELF
         elf_tot = elf_val + e2k
@@ -925,7 +404,7 @@ def plot_model_vs_experiment_two_panel(use_partitioning: bool = True, savepath: 
         e1_dict = epsilon1_valence_E0(E, s)
         e2_dict = epsilon2_valence_E0(E, s, partitioned=use_partitioning)
         e1_model = e1_dict["total"]
-        e2_model = e2_dict["total"] + epsilon2_Kshell_E0_fsum_corrected(E, s)
+        e2_model = e2_dict["total"] + epsilon2_Kshell_E0(E, s)
         elf_model = elf_E0(E, s, include_kshell=True, partitioned=use_partitioning)
 
         # Model predictions
@@ -1197,7 +676,7 @@ if __name__ == "__main__":
     e1_model = e1_dict["total"]
     e2_model = e2_dict["total"]
     # Add K-shell contribution to epsilon2
-    e2_model = e2_model + epsilon2_Kshell_E0_fsum_corrected(E, s)
+    e2_model = e2_model + epsilon2_Kshell_E0(E, s)
     # Compute ELF with K-shell
     elf_model = elf_E0(E, s, include_kshell=True, partitioned=use_partitioning)
 

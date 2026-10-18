@@ -15,6 +15,7 @@ Units
 from dataclasses import dataclass
 from typing import List, Literal, Union
 import numpy as np
+from causal_drude import RESPONSE_VERSION, removed_real, retained_moment
 import matplotlib.pyplot as plt
 from pathlib import Path
 
@@ -41,6 +42,7 @@ plt.rcParams.update(rcparams_with_fontsize(RC_BASE_STANDARD, FONTSIZE))
 
 Material = Literal["amorphous", "hexagonal"]
 ArrayLike = Union[float, np.ndarray]
+MOLECULAR_ELECTRONS = 10.0
 
 # ---- partitioning helpers (Kyriakou et al.) ----
 def _Theta(x):
@@ -322,32 +324,16 @@ def epsilon2_valence_E0(E: np.ndarray, s: IceOpticalSet) -> dict:
         "ionizations": [array(...), ...],
         "total": array(...)
       }
-    This is the unpartitioned optical ε2; Kyriakou partition is applied
-    separately in the q-dependent code to derive correction factors.
+    Uses the same anchored partition and moment allocation as finite q.
     """
-    E = np.asarray(E, float)
-
-    # Gating (optical): excitations above Bmin; ionizations above individual Bth
-    g_exc = (E >= s.Bmin).astype(float)
-
-    exc = [(s.Ep**2) * g_exc * _d_drude_e2(E, o.f, o.E0, o.gamma) for o in s.excitations]
-    ion = []
-    for o in s.ionizations:
-        g = (E >= o.Bth).astype(float)
-        ion.append((s.Ep**2) * g * _drude_e2(E, o.f, o.E0, o.gamma))
-
-    total = np.zeros_like(E)
-    for y in exc:
-        total += y
-    for y in ion:
-        total += y
-
-    return {"excitations": exc, "ionizations": ion, "total": total}
+    result = epsilon2_valence_Eq(np.atleast_1d(E), 0., s, DispersionCoeffs(0., 0., 0.))
+    return {k: ([a[0] for a in v] if isinstance(v, list) else v[0])
+            for k, v in result.items()}
 
 def epsilon1_valence_E0(E: np.ndarray, s: IceOpticalSet) -> dict:
     """
     Real dielectric, optical limit (q=0), valence only.
-    No threshold gating. Baseline +1 is included only in 'total'.
+    KK counterpart of the thresholded total. Baseline +1 is in 'total'.
     Returns:
       {
         "excitations": [array(...), ...],
@@ -355,18 +341,9 @@ def epsilon1_valence_E0(E: np.ndarray, s: IceOpticalSet) -> dict:
         "total": array(...)
       }
     """
-    E = np.asarray(E, float)
-
-    exc = [(s.Ep**2) * _d_drude_e1(E, o.f, o.E0, o.gamma) for o in s.excitations]
-    ion = [(s.Ep**2) * _drude_e1(E, o.f, o.E0, o.gamma) for o in s.ionizations]
-
-    total = np.ones_like(E)
-    for y in exc:
-        total += y
-    for y in ion:
-        total += y
-
-    return {"excitations": exc, "ionizations": ion, "total": total}
+    result = epsilon1_valence_Eq(np.atleast_1d(E), 0., s, DispersionCoeffs(0., 0., 0.))
+    return {k: ([a[0] for a in v] if isinstance(v, list) else v[0])
+            for k, v in result.items()}
 
 def epsilon2_Kshell_E0(E: np.ndarray, s: IceOpticalSet) -> np.ndarray:
     E = np.asarray(E, float)
@@ -374,45 +351,6 @@ def epsilon2_Kshell_E0(E: np.ndarray, s: IceOpticalSet) -> np.ndarray:
     y = (s.Ep**2) * _drude_e2(E, o.f, o.E0, o.gamma)
     return np.where(E >= o.Bth, y, 0.0)
 
-def epsilon2_Kshell_E0_fsum_corrected(E, s):
-    r"""
-    Oxygen K-shell ε2^(K)(E, q=0) normalized by the f-sum so that
-        ∫_0^∞ E * ε2^(K)(E) dE = (π/2) * Ep^2 * N_K,   with N_K = 0.178.
-    This enforces Neff^(K) = 0.178 and makes Neff_total → 1, Neff_valence → 0.822.
-
-    Uses a single (normal) Drude shape with onset at the O K edge.
-    Requires in 's.kshell' at least: E0, gamma, Bth. Uses s.Ep for Ep.
-    """
-    import numpy as np
-
-    E   = np.asarray(E, dtype=float)
-    Ep  = float(s.Ep)
-    ks  = getattr(s, "kshell", None)
-    if ks is None:
-        # No K-shell parameters present
-        return np.zeros_like(E)
-
-    E0   = float(getattr(ks, "E0",   450.0))
-    gamma= float(getattr(ks, "gamma",360.0))
-    Bth  = float(getattr(ks, "Bth",  540.0))
-    N_K  = 0.1788  # Emfietzoglou et al., fixed atomic fraction
-
-    # Unit-amplitude Drude *shape* for ε2:
-    # ε2_shape(E) = (γ E) / [(E0^2 - E^2)^2 + (γ E)^2], zeroed below the edge
-    num   = gamma * E
-    den   = (E0*E0 - E*E)**2 + (gamma * E)**2
-    shape = np.where(E >= Bth, np.where(den > 0.0, num / den, 0.0), 0.0)
-
-    # Target area for ∫ E * ε2^(K)(E) dE
-    target = 0.5 * np.pi * (Ep**2) * N_K
-
-    # Cumulative trapezoid; last value is the area
-    dE     = np.diff(E)
-    midE   = 0.5 * (E[1:] + E[:-1])
-    area_shape = np.sum(0.5 * (shape[1:] + shape[:-1]) * dE * midE)
-    A = target / area_shape if np.isfinite(area_shape) and area_shape > 0.0 else 0.0
-
-    return A * shape
 
 def elf_E0(E: np.ndarray, s: IceOpticalSet, include_kshell: bool = True) -> np.ndarray:
     """ELF at q=0 using valence ε plus optional additive K-shell ε2."""
@@ -456,15 +394,39 @@ def _fj_q(fj0: np.ndarray, q: np.ndarray, C: DispersionCoeffs) -> np.ndarray:
     term2 = (b[None, :] * q2) * np.exp(-c[None, :] * q2)
     return fj0[None, :] * (term1 + term2)
 
-def _renorm_fi_q(fi0: np.ndarray, fj0_sum0: float, fjq_sum: np.ndarray) -> np.ndarray:
-    """
-    Ionization strengths vs q by f-sum normalization:
-      f_i(q) = f_i * (1 - sum_j f_j(q)) / (1 - sum_j f_j(0))
-    Returns shape (nq, n_ion).
-    """
+def _valence_parameters(s, q, C, inner_shell_strength_electrons=None):
+    """Allocate actual above-gap moments, not untruncated amplitudes.
 
-    scale = (1.0 - fjq_sum) / (1.0 - fj0_sum0)   # shape (nq,)
-    return fi0[None, :] * scale[:, None]
+    The outer amplitudes retain their relative fitted values. Their common
+    multiplier is determined by the molecular f-sum, after subtracting the
+    *retained* excitation moments and the specified core continuum moment.
+    No final ELF or core spectrum is rescaled. See CONSISTENCY.md.
+    """
+    if np.any(~np.isfinite(q)) or np.any(q < 0):
+        raise ValueError("Momentum-transfer magnitudes must be finite and nonnegative")
+    fj0 = np.array([o.f for o in s.excitations])
+    fi0 = np.array([o.f for o in s.ionizations])
+    ej = np.array([o.E0 for o in s.excitations])
+    fj = _fj_q(fj0, q, C)
+    gj = _gamma_q(np.array([o.gamma for o in s.excitations]), q, C)
+    ei = _Ei_q(np.array([o.E0 for o in s.ionizations]), q, C)
+    gi = _gamma_q(np.array([o.gamma for o in s.ionizations]), q, C)
+    if inner_shell_strength_electrons is None:
+        # This default is the optical-Drude diagnostic, not the ion GOS path.
+        fk = 0. if s.kshell is None else (s.kshell.f * retained_moment(
+            s.kshell.E0, s.kshell.gamma, s.kshell.Bth))
+    else:
+        fk = np.asarray(inner_shell_strength_electrons, float) / MOLECULAR_ELECTRONS
+    if np.any(fk < 0):
+        raise ValueError("Core oscillator strength must be nonnegative")
+    excitation = np.sum(fj * retained_moment(ej, gj, s.Bmin, True), axis=1)
+    outer = np.sum(fi0 * retained_moment(ei, gi, s.Bmin), axis=1)
+    remaining = 1. - fk - excitation
+    if (np.any(~np.isfinite(remaining)) or np.any(remaining < 0)
+            or np.any(~np.isfinite(outer)) or np.any(outer <= 0)):
+        raise ValueError("Invalid thresholded molecular oscillator-strength budget")
+    fi = fi0[None, :] * (remaining / outer)[:, None]
+    return fj, fi, ei, gj, gi
 
 def _Ei_q(Ei0: np.ndarray, q: np.ndarray, C: DispersionCoeffs) -> np.ndarray:
     """
@@ -484,33 +446,30 @@ def _gamma_q(g0, q, C):
 # ============================================================
 # Finite-q ε₂ and ε₁ (valence only), channel-resolved
 # ============================================================
-def epsilon2_valence_Eq(E: np.ndarray, q: ArrayLike, s: IceOpticalSet, C: DispersionCoeffs, partitioned: bool = True) -> dict:
+def epsilon2_valence_Eq(
+    E: np.ndarray,
+    q: ArrayLike,
+    s: IceOpticalSet,
+    C: DispersionCoeffs,
+    partitioned: bool = True,
+    inner_shell_strength_electrons=None,
+) -> dict:
     """
     Imaginary dielectric at finite q, valence only.
     CORRECTED: Applies Kyriakou partitioning dynamically to the q-dispersed
     Drude functions, ensuring redistribution respects the shifted peaks E_i(q).
     """
-    E = np.asarray(E, float)
+    requested = np.atleast_1d(np.asarray(E, float))
+    E = np.unique(np.r_[requested, s.Bmin, [o.Bth for o in s.ionizations]])
+    indices = np.searchsorted(E, requested)
     q = _ensure_1d(q)
     nE, nq = E.size, q.size
 
     # 1. Pre-calculate dispersed parameters for all q
-    # Excitations: f, gamma disperse; E0 fixed
-    fj0 = np.array([o.f for o in s.excitations], float)
+    # Excitations: f, gamma disperse; E0 fixed.
     Ej0 = np.array([o.E0 for o in s.excitations], float)
-    gj0 = np.array([o.gamma for o in s.excitations], float)
-    fjq = _fj_q(fj0, q, C)                        # (nq, n_exc)
-    gjq = _gamma_q(gj0, q, C)                     # (nq, n_exc)
-
-    # Ionizations: f by renorm, E and gamma disperse
-    fi0 = np.array([o.f for o in s.ionizations], float)
-    Ei0 = np.array([o.E0 for o in s.ionizations], float)
-    gi0 = np.array([o.gamma for o in s.ionizations], float)
-    fj0_sum0 = np.sum(fj0)
-    fjq_sum = np.sum(fjq, axis=1)                 # (nq,)
-    fiq = _renorm_fi_q(fi0, fj0_sum0, fjq_sum)    # (nq, n_ion)
-    Eiq = _Ei_q(Ei0, q, C)                        # (nq, n_ion)
-    giq = _gamma_q(gi0, q, C)                     # (nq, n_ion)
+    fjq, fiq, Eiq, gjq, giq = _valence_parameters(
+        s, q, C, inner_shell_strength_electrons)
 
     # Ionization thresholds are fixed physical constants.
     ion_B = [o.Bth for o in s.ionizations]
@@ -543,15 +502,16 @@ def epsilon2_valence_Eq(E: np.ndarray, q: ArrayLike, s: IceOpticalSet, C: Disper
                 E, exc_raw, Ej0, ion_raw, ion_B, s.Bmin
             )
         else:
-            # Fallback: Just apply standard gating if not partitioned
+            # Unpartitioned bands are a diagnostic decomposition of the same
+            # thresholded total, not individually thresholded transport shells.
             part_exc = [(y * (E >= s.Bmin).astype(float)) for y in exc_raw]
-            part_ion = [(y * (E >= ion_B[k]).astype(float)) for k, y in enumerate(ion_raw)]
+            part_ion = [(y * (E >= s.Bmin).astype(float)) for y in ion_raw]
 
         # Store results
         for j, y in enumerate(part_exc):
-            exc_results[j, i, :] = y
+            exc_results[j, i, :] = np.where(E > s.Bmin, y, 0.)
         for k, y in enumerate(part_ion):
-            ion_results[k, i, :] = y
+            ion_results[k, i, :] = np.where(E > s.Bmin, y, 0.)
 
     # 3. Format output as list of (nq, nE) arrays
     exc_list = [exc_results[j] for j in range(len(s.excitations))]
@@ -563,47 +523,45 @@ def epsilon2_valence_Eq(E: np.ndarray, q: ArrayLike, s: IceOpticalSet, C: Disper
     for y in ion_list:
         total += y
 
-    return {"excitations": exc_list, "ionizations": ion_list, "total": total}
+    return {"excitations": [a[:, indices] for a in exc_list],
+            "ionizations": [a[:, indices] for a in ion_list],
+            "total": total[:, indices]}
 
 
-def epsilon1_valence_Eq(E: np.ndarray, q: ArrayLike, s: IceOpticalSet, C: DispersionCoeffs) -> dict:
+def epsilon1_valence_Eq(
+    E: np.ndarray,
+    q: ArrayLike,
+    s: IceOpticalSet,
+    C: DispersionCoeffs,
+    inner_shell_strength_electrons=None,
+) -> dict:
     """
     Real dielectric at finite q, valence only, channel-resolved.
-    No gating; include +1 baseline only in 'total'.
+    Subtract the KK counterpart of the removed sub-gap tail. The real-band
+    decomposition precedes channel redistribution; only the total dielectric
+    pair is used in screening denominators.
     Returns dict with arrays shaped like epsilon2_valence_Eq.
     """
-    E = np.asarray(E, float)
+    E = np.atleast_1d(np.asarray(E, float))
     q = _ensure_1d(q)
     nE, nq = E.size, q.size
 
-    # Params @ q
-    fj0 = np.array([o.f for o in s.excitations], float)
     Ej0 = np.array([o.E0 for o in s.excitations], float)
-    gj0 = np.array([o.gamma for o in s.excitations], float)
-    fjq = _fj_q(fj0, q, C)                        # (nq, n_exc)
-    gjq = _gamma_q(gj0, q, C)                     # (nq, n_exc)
-
-    fi0 = np.array([o.f for o in s.ionizations], float)
-    Ei0 = np.array([o.E0 for o in s.ionizations], float)
-    gi0 = np.array([o.gamma for o in s.ionizations], float)
-    fj0_sum0 = np.sum(fj0)
-    fjq_sum = np.sum(fjq, axis=1)                 # (nq,)
-    fiq = _renorm_fi_q(fi0, fj0_sum0, fjq_sum)    # (nq, n_ion)
-    Eiq = _Ei_q(Ei0, q, C)                        # (nq, n_ion)
-    giq = _gamma_q(gi0, q, C)                     # (nq, n_ion)
+    fjq, fiq, Eiq, gjq, giq = _valence_parameters(
+        s, q, C, inner_shell_strength_electrons)
 
     exc_list = []
-    for j in range(fj0.size):
-        y = np.empty((nq, nE), float)
-        for iq in range(nq):
-            y[iq, :] = (s.Ep**2) * _d_drude_e1(E, fjq[iq, j], Ej0[j], gjq[iq, j])
+    for j in range(len(s.excitations)):
+        f, g = fjq[:, j, None], gjq[:, j, None]
+        y = s.Ep**2 * (_d_drude_e1(E, f, Ej0[j], g)
+            - f*removed_real(E, Ej0[j], g, s.Bmin, True))
         exc_list.append(y)
 
     ion_list = []
-    for k in range(fi0.size):
-        y = np.empty((nq, nE), float)
-        for iq in range(nq):
-            y[iq, :] = (s.Ep**2) * _drude_e1(E, fiq[iq, k], Eiq[iq, k], giq[iq, k])
+    for k in range(len(s.ionizations)):
+        f, e, g = fiq[:, k, None], Eiq[:, k, None], giq[:, k, None]
+        y = s.Ep**2 * (_drude_e1(E, f, e, g)
+            - f*removed_real(E, e, g, s.Bmin))
         ion_list.append(y)
 
     total = np.ones((nq, nE), float)
@@ -635,7 +593,7 @@ def elf_Eq(E: np.ndarray, q: ArrayLike, s: IceOpticalSet, C: DispersionCoeffs, i
     denom = np.where(denom == 0.0, np.finfo(float).tiny, denom)
     elf = e2 / denom
     if include_kshell:
-        ks = epsilon2_Kshell_E0_fsum_corrected(E, s)             # (nE,)
+        ks = epsilon2_Kshell_E0(E, s)  # same spectrum as the generator
         elf = elf + ks[None, :]
     return elf
 

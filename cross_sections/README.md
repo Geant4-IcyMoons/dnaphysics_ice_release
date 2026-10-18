@@ -1,5 +1,10 @@
 # Cross-Section Tables
 
+**Regeneration pending:** these bundled DATs predate the generator's
+`threshold-kk-moment-budget-v2` repair. They remain historical release products,
+not newly corrected tables. Do not mix them with regenerated energy patches.
+See [the repair and validation requirements](../python_scripts/physics_ice/CONSISTENCY.md).
+
 This directory contains the `.dat` files distributed with Geant4-IcyMoons.
 
 The custom ice models read these files through the Geant4 low-energy data path, not directly from this repository directory. Before running the executable, copy or link the files into:

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
 import os, sys
+import csv
+import hashlib
+from pathlib import Path
 import shutil
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -19,8 +22,6 @@ from constants import (
     CROSS_SECTIONS_DIR,
     EH,
     EV_TO_HA,
-    ELF_ROLLOFF_COEF,
-    ELF_ROLLOFF_E0_eV,
     MC2_HA,
     MC2_eV,
     N,
@@ -36,6 +37,17 @@ from constants import (
     mass,
 )
 import emfietzoglou_model_finite_q as model
+
+
+def _response_signature():
+    """Reject cached values from different executable response sources."""
+    root = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for name in ('causal_drude.py', 'constants.py',
+                 'emfietzoglou_model_finite_q.py', 'generate_ice_cross_sections.py'):
+        digest.update(name.encode())
+        digest.update((root/name).read_bytes())
+    return digest.hexdigest()
 
 # Select ice structure: "amorphous" or "hexagonal"
 ICE_TYPE = "hexagonal"
@@ -220,12 +232,8 @@ def _regime_flags(Tj):
     return (use_mc and APPLY_MOTT_COULOMB), use_rel_long, use_rel_trans, use_density_effect
 
 def _elf_rolloff_factor(Ei):
-    Ei = np.asarray(Ei, dtype=float)
-    factor = np.ones_like(Ei)
-    mask = Ei > ELF_ROLLOFF_E0_eV
-    if np.any(mask):
-        factor[mask] = 1.0 - ELF_ROLLOFF_COEF * np.log10(Ei[mask] / ELF_ROLLOFF_E0_eV)
-    return factor
+    """Do not alter the sum-rule-constrained response after inversion."""
+    return np.ones_like(np.asarray(Ei, dtype=float))
 
 def beta2_rel(Tj):
     # Use exactly the form you specified:
@@ -1108,6 +1116,8 @@ def save_cross_section_corrections_npz(
     )
 
     np_save_args = dict(
+        dielectric_response_version=model.RESPONSE_VERSION,
+        dielectric_response_signature=_response_signature(),
         T_eV=T_arr,
         density_scale_factor=float(density_scale_factor),
         total_sigma_pwba=pwba_total,
@@ -1178,6 +1188,10 @@ def _npz_int_value(npz_data, key):
         return None
 
 def _npz_matches_params(npz_data, NE, Nq, T_list=None):
+    if str(np.asarray(npz_data.get("dielectric_response_version", "")).item()) != model.RESPONSE_VERSION:
+        return False
+    if str(np.asarray(npz_data.get("dielectric_response_signature", "")).item()) != _response_signature():
+        return False
     ne = _npz_int_value(npz_data, "NE")
     nq = _npz_int_value(npz_data, "Nq")
     if ne is None or nq is None:
@@ -1193,6 +1207,8 @@ def _npz_matches_params(npz_data, NE, Nq, T_list=None):
     return True
 
 def _dcs_data_from_npz(npz_data):
+    if str(np.asarray(npz_data.get("dielectric_response_signature", "")).item()) != _response_signature():
+        return None
     keys = ("dcs_T_line", "dcs_E_line", "dcs_exc_vals", "dcs_ion_vals")
     if not all(key in npz_data for key in keys):
         return None
@@ -1201,6 +1217,7 @@ def _dcs_data_from_npz(npz_data):
     if T_line.size == 0 or E_line.size == 0:
         return None
     return {
+        "dielectric_response_signature": _response_signature(),
         "T_line": T_line,
         "E_line": E_line,
         "exc_vals": np.asarray(npz_data["dcs_exc_vals"], float),
@@ -1386,6 +1403,8 @@ def _format_dcs_row(T, E, vals):
     return " ".join(fields) + "\n"
 
 def _write_dcs_tables_from_data(dcs_data, exc_out, ion_out):
+    if dcs_data.get("dielectric_response_signature") != _response_signature():
+        raise ValueError("DCS response provenance is missing or incompatible; regenerate")
     T_line = np.asarray(dcs_data.get("T_line", []), float)
     E_line = np.asarray(dcs_data.get("E_line", []), float)
     exc_vals = np.asarray(dcs_data.get("exc_vals", []), float)
@@ -1407,30 +1426,7 @@ def _write_dcs_tables_from_data(dcs_data, exc_out, ion_out):
             exc_handle.write(_format_dcs_row(T_line[i], E_line[i], exc_vals[i]))
             ion_handle.write(_format_dcs_row(T_line[i], E_line[i], ion_vals[i]))
 
-def _load_dcs_table(path):
-    data = np.loadtxt(path)
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    if data.shape[1] < 3:
-        raise ValueError(f"DCS table {path} has fewer than 3 columns.")
-    T_line = np.asarray(data[:, 0], float)
-    E_line = np.asarray(data[:, 1], float)
-    vals = np.asarray(data[:, 2:], float)
-    return T_line, E_line, vals
 
-def _load_dcs_pair(exc_path, ion_path):
-    T_exc, E_exc, exc_vals = _load_dcs_table(exc_path)
-    T_ion, E_ion, ion_vals = _load_dcs_table(ion_path)
-    if (T_exc.shape != T_ion.shape) or (E_exc.shape != E_ion.shape):
-        raise ValueError("Excitation and ionization DCS grids have different shapes.")
-    if not np.allclose(T_exc, T_ion) or not np.allclose(E_exc, E_ion):
-        raise ValueError("Excitation and ionization DCS grids do not match.")
-    return {
-        "T_line": T_exc,
-        "E_line": E_exc,
-        "exc_vals": exc_vals,
-        "ion_vals": ion_vals,
-    }
 
 def _integrate_dcs_to_totals(T_line, E_line, vals):
     T_line = np.asarray(T_line, float)
@@ -1680,13 +1676,8 @@ def write_emfietzoglou_dcs_tables(
     exc_total_out = out_dir / f"sigma_excitation_e_{ice_label}_emfietzoglou_kyriakou.dat"
     ion_total_out = out_dir / f"sigma_ionisation_e_{ice_label}_emfietzoglou_kyriakou.dat"
 
-    if dcs_data is None and exc_out.exists() and ion_out.exists():
-        try:
-            dcs_data = _load_dcs_pair(exc_out, ion_out)
-            print(f"Loaded existing DCS from {exc_out} and {ion_out}")
-        except Exception as exc:
-            print(f"Failed to load existing DCS tables: {exc}")
-            dcs_data = None
+    # Unversioned DATs cannot establish which response produced their values.
+    # Reuse is allowed only through a compatible, versioned NPZ cache.
 
     if dcs_data is None:
         if template_path is None:
@@ -1805,6 +1796,7 @@ def write_emfietzoglou_dcs_tables(
                 )
 
         dcs_data = {
+            "dielectric_response_signature": _response_signature(),
             "T_line": T_line,
             "E_line": E_line,
             "exc_vals": exc_vals,
@@ -1813,6 +1805,22 @@ def write_emfietzoglou_dcs_tables(
 
     _write_dcs_tables_from_data(dcs_data, exc_out, ion_out)
     _write_total_tables_from_dcs(dcs_data, exc_total_out, ion_total_out)
+    # DATs must remain numeric-only for the existing Geant4 readers.
+    provenance = out_dir / f"dielectric_response_{ice_label}.csv"
+    temporary = provenance.with_name(provenance.name + f".{os.getpid()}.tmp")
+    try:
+        with temporary.open('w', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['response_version', 'source_sha256', 'file', 'sha256'])
+            for path in [exc_out, ion_out, exc_total_out, ion_total_out]:
+                with path.open('rb') as source:
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: source.read(1024*1024), b''):
+                        digest.update(chunk)
+                writer.writerow([model.RESPONSE_VERSION, _response_signature(), path.name, digest.hexdigest()])
+        os.replace(temporary, provenance)
+    finally:
+        temporary.unlink(missing_ok=True)
     _export_to_custom_geant4([exc_out, ion_out, exc_total_out, ion_total_out])
 
     print(f"Saved excitation DCS to {exc_out}")
